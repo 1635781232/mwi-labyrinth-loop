@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Milky Way Idle 测试服迷宫循环
 // @namespace    https://github.com/1635781232/mwi-labyrinth-loop
-// @version      0.2.0
+// @version      0.2.2
 // @description  使用游戏内置自动化循环进入、开始和结束迷宫，并在测试服自动补充入场券。
 // @author       1635781232
 // @license      MIT
@@ -37,8 +37,6 @@
     plainStart: ["开始", "Start"],
     stop: ["停止", "Stop"],
     end: ["结束迷宫", "逃离迷宫", "Escape Labyrinth", "Escape"],
-    settings: ["设置", "Settings"],
-    labyrinthNav: ["返回迷宫", "迷宫入口", "Labyrinth", "迷宫"],
     refill: ["补充入场券", "补充迷宫入场券", "Refill Entries", "Refill Labyrinth Entries"],
     confirm: ["确认", "确定", "确认结束", "仍然结束", "是", "Confirm", "Yes"],
   };
@@ -74,6 +72,7 @@
   let webLockHeld = false;
   let webLockPending = false;
   let releaseWebLock = null;
+  let uiHost = null;
 
   function loadState() {
     const saved = GM_getValue(stateKey, null);
@@ -308,8 +307,14 @@
     return dialogCandidates().some((dialog) => normalizeText(dialog.innerText || dialog.textContent).length > 0);
   }
 
-  function navigateTo(texts, description) {
-    return safeClick(findExactButton(texts, document, false), description);
+  function findNavigation(section) {
+    const icon = document.querySelector(`svg[aria-label="navigationBar.${section}"]`);
+    const link = icon?.closest("[class*='NavigationBar_navigationLink']");
+    return link && isVisible(link) ? link : null;
+  }
+
+  function navigateTo(section, description) {
+    return safeClick(findNavigation(section), description);
   }
 
   function beginEnding(controls) {
@@ -327,7 +332,7 @@
         return;
       }
       if (Date.now() - state.phaseSince < 1500) return;
-      if (navigateTo(TEXT.labyrinthNav, "返回迷宫验证入场券")) {
+      if (navigateTo("labyrinth", "返回迷宫验证入场券")) {
         setPhase("verifyRefillResult");
       } else if (hasTimedOut()) {
         block("labyrinthNavMissing", "补充后找不到迷宫入口");
@@ -367,7 +372,7 @@
     }
 
     if (state.phase !== "openSettings") {
-      if (navigateTo(TEXT.settings, "打开设置")) {
+      if (navigateTo("settings", "打开设置")) {
         setPhase("openSettings");
         setStatus("正在打开设置");
       } else {
@@ -418,7 +423,7 @@
     const entries = readEntries();
     if (!entries) {
       if (!["openLabyrinth", "waitEntries"].includes(state.phase)) {
-        if (navigateTo(TEXT.labyrinthNav, "打开迷宫页面")) {
+        if (navigateTo("labyrinth", "打开迷宫页面")) {
           setPhase("openLabyrinth");
           setStatus("正在打开迷宫页面");
           return;
@@ -454,6 +459,11 @@
         state.startIssued = false;
         setPhase("awaitFirstStart");
         addLog("已接管本次迷宫");
+      } else if (["idle", "openLabyrinth", "waitEntries", "waitEnter"].includes(state.phase)) {
+        state.ownedRun = true;
+        state.startIssued = false;
+        setPhase("awaitFirstStart");
+        addLog("已接管当前迷宫");
       } else {
         setStatus("检测到非脚本启动的迷宫，等待你手动结束");
         return;
@@ -604,6 +614,7 @@
   function createUi() {
     const host = document.createElement("div");
     host.id = `${SCRIPT_ID}-host`;
+    uiHost = host;
     document.body.appendChild(host);
     const shadow = host.attachShadow({ mode: "open" });
     shadow.innerHTML = `
@@ -644,6 +655,13 @@
 
   function renderUi() {
     if (!ui) return;
+    // Expose status for diagnostics without using it as a control input.
+    uiHost.dataset.enabled = String(state.enabled);
+    uiHost.dataset.phase = state.phase;
+    uiHost.dataset.ownedRun = String(state.ownedRun);
+    uiHost.dataset.startIssued = String(state.startIssued);
+    uiHost.dataset.status = statusText;
+    uiHost.dataset.blockedReason = state.blockedReason || "";
     ui.toggle.textContent = state.enabled ? "停用" : "启用";
     ui.toggle.className = `toggle ${state.enabled ? "on" : "off"}`;
     ui.status.textContent = statusText;
