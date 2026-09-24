@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Milky Way Idle 测试服迷宫循环
 // @namespace    https://github.com/1635781232/mwi-labyrinth-loop
-// @version      0.2.4
+// @version      0.2.5
 // @description  使用游戏内置自动化循环进入、开始和结束迷宫，并在测试服自动补充入场券。
 // @author       1635781232
 // @license      MIT
@@ -21,7 +21,7 @@
   "use strict";
 
   const SCRIPT_ID = "mwi-labyrinth-loop";
-  const STATE_VERSION = 2;
+  const STATE_VERSION = 3;
   const TICK_MS = 2000;
   const MUTATION_DEBOUNCE_MS = 150;
   const ACTION_TIMEOUT_MS = 20000;
@@ -77,8 +77,11 @@
 
   function loadState() {
     const saved = GM_getValue(stateKey, null);
-    if (!saved || typeof saved !== "object" || saved.version !== STATE_VERSION) {
+    if (!saved || typeof saved !== "object") {
       return { ...defaultState };
+    }
+    if (saved.version !== STATE_VERSION) {
+      return { ...defaultState, enabled: saved.enabled === true };
     }
     return { ...defaultState, ...saved };
   }
