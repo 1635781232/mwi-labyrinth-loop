@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Milky Way Idle 测试服迷宫循环
 // @namespace    https://github.com/1635781232/mwi-labyrinth-loop
-// @version      0.4.2
+// @version      0.5.0
 // @description  手动启用后，使用游戏内置自动化循环进入、开始、结束迷宫，并在测试服补充入场券。
 // @author       1635781232
 // @license      MIT
@@ -35,17 +35,17 @@
     started: false,
     observed: false,
     before: null,
-    confirmations: 0,
     entryTickets: null,
     entryAttempts: 0,
     since: Date.now(),
     error: "",
   };
   // Preserve a pending run across refreshes of this version.
-  if ([6, 7].includes(saved.version) && saved.enabled) {
+  if (saved.version === 8 && saved.enabled) {
     Object.assign(state, saved);
   }
   let lastClick = 0;
+  let gameSocket = null;
   let status = state.enabled ? "检查迷宫" : "脚本已停用";
   let logs = Array.isArray(GM_getValue(logKey, [])) ? GM_getValue(logKey, []).slice(-100) : [];
   let panel;
@@ -67,7 +67,7 @@
     visible(element) && (allowDisabled || !disabled(element)) && names.includes(label(element)));
 
   function save() {
-    GM_setValue(key, { ...state, version: 7 });
+    GM_setValue(key, { ...state, version: 8 });
     render();
   }
 
@@ -100,6 +100,58 @@
     note("click", { action, target: label(element) });
     element.click();
     return true;
+  }
+
+  // HTMLElement.click() did not start the labyrinth in the live page.
+  // Capture the game's existing WebSocket as messages arrive.
+  const dataDescriptor = Object.getOwnPropertyDescriptor(MessageEvent.prototype, "data");
+  if (dataDescriptor?.get) {
+    Object.defineProperty(MessageEvent.prototype, "data", {
+      configurable: true,
+      get() {
+        const value = dataDescriptor.get.call(this);
+        const socket = this.currentTarget;
+        if (socket instanceof WebSocket && socket.url.includes("milkywayidle.com/ws")) {
+          gameSocket = socket;
+        }
+        return value;
+      },
+    });
+  }
+
+  function sendGame(type, data, action) {
+    if (Date.now() - lastClick < CLICK_DELAY_MS) return false;
+    if (!gameSocket || gameSocket.readyState !== WebSocket.OPEN) {
+      status = "等待游戏连接，暂不发送操作";
+      return false;
+    }
+    try {
+      gameSocket.send(JSON.stringify({ type, ...data, ts: Date.now() }));
+      lastClick = Date.now();
+      note("request", { action, type });
+      return true;
+    } catch (error) {
+      pause(`游戏请求发送失败：${error?.message || error}`);
+      return false;
+    }
+  }
+
+  function startExplore() {
+    return sendGame("new_character_action", {
+      newCharacterActionData: {
+        actionHrid: "/actions/labyrinth/explore",
+        difficultyTier: 0,
+        hasMaxCount: false,
+        maxCount: 0,
+        primaryItemHash: "",
+        secondaryItemHash: "",
+        enhancingMaxLevel: 0,
+        enhancingProtectionMinLevel: 0,
+        characterLoadoutId: 0,
+        isStartNow: true,
+        confirmedActionValueWarning: false,
+      },
+    }, "开始迷宫");
   }
 
   function lock() {
@@ -167,43 +219,15 @@
     return match ? { current: Number(match[1] || match[3]), max: Number(match[2] || match[4]) } : null;
   }
 
-  function dialogKind(value) {
-    const valueText = text(value);
-    if (/确定要逃出迷宫吗.*当前的迷宫将会结束/.test(valueText) ||
-        /escape (?:the )?labyrinth.*(?:will end|end the current)/i.test(valueText)) return 1;
-    if (/你真的确定吗.*你还有\s*\d+\s*个火把.*可能还能继续探索/.test(valueText) ||
-        /really sure.*\d+.*torches?.*(?:continue|explor)/i.test(valueText)) return 2;
-    return 0;
-  }
-
-  function exitDialogs() {
-    const matches = [];
-    for (const confirm of buttons()) {
-      if (!visible(confirm) || disabled(confirm) ||
-          !["确定", "确认", "Confirm", "Yes"].includes(label(confirm))) continue;
-      let ancestor = confirm.parentElement;
-      for (let depth = 0; ancestor && ancestor !== document.body && depth < 9; depth++, ancestor = ancestor.parentElement) {
-        const kind = dialogKind(label(ancestor));
-        if (!kind) continue;
-        const rect = confirm.getBoundingClientRect();
-        const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-        if (hit === confirm || confirm.contains(hit)) matches.push({ kind, confirm });
-        break;
-      }
-    }
-    return matches;
-  }
-
   function unknownDialog() {
     return [...document.querySelectorAll("[role='dialog'], [role='alertdialog'], [aria-modal='true']")]
-      .some((dialog) => visible(dialog) && label(dialog) && !dialogKind(label(dialog)));
+      .some((dialog) => visible(dialog) && label(dialog));
   }
 
   function resetRun() {
     state.started = false;
     state.observed = false;
     state.before = null;
-    state.confirmations = 0;
     state.entryTickets = null;
     state.entryAttempts = 0;
     state.error = "";
@@ -211,28 +235,12 @@
     note("mazeEnded");
   }
 
-  function endMaze(maze) {
-    const dialogs = exitDialogs();
-    if (unknownDialog()) return pause("退出时出现未知弹窗，请手动处理");
-    if (state.confirmations === 0) {
-      const first = dialogs.find((item) => item.kind === 1);
-      if (first && click(first.confirm, "确认结束迷宫")) {
-        state.confirmations = 1;
-        phase("ending", "已确认退出，等待火把提示或退出结果");
-      }
-    } else if (state.confirmations === 1) {
-      const second = dialogs.find((item) => item.kind === 2);
-      if (second && click(second.confirm, "确认剩余火把并退出")) {
-        state.confirmations = 2;
-        phase("ending", "已确认火把提示，等待迷宫结束");
-      }
-    }
-    if (Date.now() - state.since > 60000) pause("退出 60 秒仍未完成，请检查页面");
-    else if (maze) status = `等待退出完成（已确认 ${state.confirmations} 次）`;
-  }
-
   function runMaze(maze) {
-    if (state.phase === "ending") return endMaze(maze);
+    if (state.phase === "ending") {
+      if (Date.now() - state.since > 60000) pause("退出请求发送后 60 秒仍未完成");
+      else status = "等待游戏确认退出";
+      return;
+    }
     if (unknownDialog()) return pause("迷宫出现未知弹窗，请手动处理");
     if (state.phase !== "waiting") phase("waiting", "迷宫已进入，准备开始");
     if (maze.stop) {
@@ -244,17 +252,15 @@
     }
     if (maze.start && maze.targetFloor !== null && maze.progress.floor !== null &&
         maze.progress.floor >= maze.targetFloor) {
-      if (click(maze.end, "到达自动化目标层，结束迷宫")) {
-        state.confirmations = 0;
-        phase("ending", "等待退出确认");
-      }
+      if (sendGame("escape_labyrinth", {}, "到达自动化目标层，结束迷宫"))
+        phase("ending", "等待游戏确认退出");
       return;
     }
     if (!state.started) {
-      if (click(maze.start, "开始迷宫")) {
+      if (maze.start && startExplore()) {
         state.started = true;
         state.before = maze.progress;
-        phase("waiting", "已点击开始，等待游戏执行");
+        phase("waiting", "已发送开始请求，等待游戏执行");
       } else status = "等待开始按钮";
       return;
     }
@@ -267,10 +273,8 @@
       status = "等待游戏内置自动化执行完毕";
       return;
     }
-    if (click(maze.end, "结束迷宫")) {
-      state.confirmations = 0;
-      phase("ending", "等待退出确认");
-    }
+    if (sendGame("escape_labyrinth", {}, "内置自动化结束，退出迷宫"))
+      phase("ending", "等待游戏确认退出");
   }
 
   function refill() {
@@ -291,8 +295,8 @@
     if (refillButton) {
       if (disabled(refillButton)) {
         phase("refill", "补票冷却中，等待按钮可用");
-      } else if (click(refillButton, "补充入场券")) {
-        phase("refillClicked", "已点击补票，等待页面更新");
+      } else if (sendGame("force_refill_labyrinth_entries", {}, "补充入场券")) {
+        phase("refillClicked", "已发送补票请求，等待页面更新");
       }
       return;
     }
@@ -330,11 +334,11 @@
           status = "入场券已扣除，等待迷宫页面出现";
         } else if (tickets && tickets.current === state.entryTickets &&
                    button(["进入迷宫", "Enter Labyrinth"]) && Date.now() - state.since >= 15000) {
-          if (state.entryAttempts < 2 && click(button(["进入迷宫", "Enter Labyrinth"]), "重试进入迷宫")) {
+          if (state.entryAttempts < 2 && sendGame("start_labyrinth", { startLabyrinthData: {} }, "重试进入迷宫")) {
             state.entryAttempts++;
             state.since = Date.now();
             save();
-          } else if (state.entryAttempts >= 2) pause("点击进入迷宫后票数和页面均未变化，请检查游戏连接");
+          } else if (state.entryAttempts >= 2) pause("入场请求后票数和页面均未变化，请检查游戏连接");
         } else {
           status = "等待游戏创建迷宫";
         }
@@ -349,10 +353,10 @@
       if (!tickets) { navigate("labyrinth"); status = "打开迷宫主界面"; return; }
       if (tickets.current === 0) return refill();
       const enter = button(["进入迷宫", "Enter Labyrinth"]);
-      if (enter && click(enter, "进入迷宫")) {
+      if (enter && sendGame("start_labyrinth", { startLabyrinthData: {} }, "进入迷宫")) {
         state.entryTickets = tickets.current;
         state.entryAttempts = 1;
-        phase("entering", "已点击进入，等待迷宫页面");
+        phase("entering", "已发送入场请求，等待迷宫页面");
       }
       else status = "等待进入迷宫按钮";
     } catch (error) {
@@ -438,7 +442,7 @@
     panel.toggle.addEventListener("click", toggle);
     panel.retry.addEventListener("click", retry);
     panel.copy.addEventListener("click", () => {
-      GM_setClipboard(JSON.stringify({ version: "0.4.2", characterId, state, status, logs }, null, 2));
+      GM_setClipboard(JSON.stringify({ version: "0.5.0", characterId, state, status, logs }, null, 2));
       status = "详细日志已复制";
       render();
     });
@@ -446,7 +450,7 @@
   }
 
   createPanel();
-  note("loaded", { version: "0.4.2" });
+  note("loaded", { version: "0.5.0" });
   new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true, characterData: true });
   setInterval(tick, 2000);
   window.addEventListener("beforeunload", unlock);

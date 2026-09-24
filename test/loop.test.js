@@ -38,7 +38,7 @@ class Element {
   }
 }
 
-function harness({ tickets = 2, active = false, floor = 1, target = 2, secondConfirm = true, entryFailures = 0 } = {}) {
+function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFailures = 0, captureSocket = true } = {}) {
   let now = 100000;
   class Clock extends Date {
     constructor(...args) { super(...(args.length ? args : [now])); }
@@ -50,12 +50,6 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, secondCon
   const stop = new Element("button", "停止");
   const end = new Element("button", "结束迷宫");
   const refill = new Element("button", "补充入场券");
-  const confirm1 = new Element("button", "确定");
-  const confirm2 = new Element("button", "确定");
-  const modal1 = new Element("div", "确定要逃出迷宫吗？当前的迷宫将会结束。");
-  const modal2 = new Element("div", "你真的确定吗？你还有390个火把，可能还能继续探索。");
-  confirm1.parentElement = modal1;
-  confirm2.parentElement = modal2;
   const navLabyrinth = new Element("div", "迷宫");
   const navSettings = new Element("div", "设置");
   const iconLabyrinth = new Element("svg");
@@ -77,7 +71,6 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, secondCon
   torchBox.querySelector = () => torchCount;
   let torches = 400;
   let pageButtons = active ? [start, end] : [enter];
-  let modal = null;
   let settingsOpen = false;
   const updateTickets = () => { body.innerText = `入场券: ${tickets} / 5`; };
   updateTickets();
@@ -109,26 +102,36 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, secondCon
     end.disabled = true;
     pageButtons = [stop, end];
   });
-  end.addEventListener("click", () => { modal = modal1; });
-  confirm1.addEventListener("click", () => {
-    if (secondConfirm) modal = modal2;
-    else { modal = null; pageButtons = [enter]; }
-  });
-  confirm2.addEventListener("click", () => { modal = null; pageButtons = [enter]; });
   navSettings.addEventListener("click", () => { settingsOpen = true; pageButtons = [refill]; });
   navLabyrinth.addEventListener("click", () => { settingsOpen = false; pageButtons = [enter]; });
   refill.addEventListener("click", () => { tickets = 5; updateTickets(); });
+  const sent = [];
+  class FakeSocket {
+    static OPEN = 1;
+    constructor() { this.readyState = 1; this.url = "wss://api-test.milkywayidle.com/ws"; }
+    send(value) {
+      const message = JSON.parse(value);
+      sent.push(message);
+      if (message.type === "start_labyrinth") enter.listeners.get("click")();
+      if (message.type === "new_character_action") start.listeners.get("click")();
+      if (message.type === "escape_labyrinth") pageButtons = [enter];
+      if (message.type === "force_refill_labyrinth_entries") refill.listeners.get("click")();
+    }
+  }
+  class FakeMessageEvent {
+    constructor(socket) { this.currentTarget = socket; }
+    get data() { return "{}"; }
+  }
   const document = {
     body,
     createElement: (tag) => new Element(tag),
     querySelector: (selector) => selector.includes("navigationBar.labyrinth") ? iconLabyrinth :
       selector.includes("navigationBar.settings") ? iconSettings : null,
     querySelectorAll: (selector) => {
-      if (selector.startsWith("button")) return [...pageButtons, ...(modal ? [modal === modal1 ? confirm1 : confirm2] : [])];
-      if (selector.includes("role='dialog'")) return modal ? [modal] : [];
+      if (selector.startsWith("button")) return pageButtons;
+      if (selector.includes("role='dialog'")) return [];
       return [];
     },
-    elementFromPoint: () => modal === modal1 ? confirm1 : modal === modal2 ? confirm2 : null,
   };
   const intervals = [];
   const timers = [];
@@ -136,7 +139,8 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, secondCon
     addEventListener() {},
   };
   const context = vm.createContext({
-    console, document, window, HTMLElement: Element, MutationObserver: class { observe() {} },
+    console, document, window, HTMLElement: Element, MessageEvent: FakeMessageEvent,
+    WebSocket: FakeSocket, MutationObserver: class { observe() {} },
     Date: Clock, Math, JSON, URL,
     location: { href: "https://test.milkywayidle.com/game?characterId=27538" },
     getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
@@ -154,11 +158,12 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, secondCon
   });
   const file = path.resolve(__dirname, "..", "mwi-labyrinth-loop.user.js");
   vm.runInContext(fs.readFileSync(file, "utf8"), context, { filename: file });
+  if (captureSocket) void new FakeMessageEvent(new FakeSocket()).data;
   const host = body.children.find((element) => element.id === "mwi-labyrinth-loop-host");
   assert.ok(host);
   host.shadowElements.get(".toggle").click();
   return {
-    start, end, enter, confirm1, confirm2, refill, navSettings,
+    start, end, enter, refill, navSettings, sent,
     tick(milliseconds = 2000) { now += milliseconds; intervals[0](); },
     finish() { floor = target; torches = 390; end.disabled = false; pageButtons = [start, end]; },
     state() { return store.get("mwi-labyrinth-loop:state:27538"); },
@@ -167,58 +172,58 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, secondCon
 
 const flow = harness();
 flow.tick();
-assert.equal(flow.enter.clickCount, 1, "enter exactly once");
+assert.equal(flow.sent[0].type, "start_labyrinth", "send the game's real entry request");
+assert.equal(flow.enter.clickCount, 0, "game buttons must not use ineffective DOM click");
 flow.tick(1000);
-assert.equal(flow.start.clickCount, 0, "wait two seconds before the next game click");
+assert.equal(flow.sent.length, 1, "wait two seconds before the next game request");
 flow.tick(1000);
-assert.equal(flow.start.clickCount, 1, "start exactly once");
+assert.equal(flow.sent[1].type, "new_character_action", "submit the labyrinth action");
+assert.equal(flow.sent[1].newCharacterActionData.actionHrid, "/actions/labyrinth/explore");
+assert.equal(flow.sent[1].newCharacterActionData.isStartNow, true);
+assert.equal(flow.start.clickCount, 0);
 flow.tick();
-assert.equal(flow.end.clickCount, 0, "do not end while automation runs");
+assert.equal(flow.sent.length, 2, "do not end while automation runs");
 flow.finish();
 flow.tick();
-assert.equal(flow.end.clickCount, 1, "end at automation target");
-flow.tick();
-flow.tick();
-assert.equal(flow.confirm1.clickCount, 1);
-assert.equal(flow.confirm2.clickCount, 1);
+assert.equal(flow.sent[2].type, "escape_labyrinth", "end at automation target");
+assert.equal(flow.end.clickCount, 0);
 flow.tick();
 assert.equal(flow.state().phase, "idle", "confirm server exit before the next run");
 
 const resumed = harness({ active: true, floor: 2 });
 resumed.tick();
-assert.equal(resumed.start.clickCount, 0, "a maze already at target needs no new start");
-assert.equal(resumed.end.clickCount, 1, "end a completed maze");
-
-const noTorches = harness({ active: true, floor: 2, secondConfirm: false });
-noTorches.tick();
-noTorches.tick();
-noTorches.tick();
-assert.equal(noTorches.confirm1.clickCount, 1, "one confirmation is enough without torches");
-assert.equal(noTorches.confirm2.clickCount, 0);
-assert.equal(noTorches.state().phase, "idle");
+assert.equal(resumed.sent[0].type, "escape_labyrinth", "end a maze already at target");
 
 const empty = harness({ tickets: 0 });
 empty.tick();
 assert.equal(empty.navSettings.clickCount, 1, "go to settings when tickets are empty");
 empty.tick();
-assert.equal(empty.refill.clickCount, 1, "refill once");
+assert.equal(empty.sent[0].type, "force_refill_labyrinth_entries", "send one refill request");
 empty.tick();
 empty.tick();
 empty.tick();
 empty.tick();
-assert.equal(empty.enter.clickCount, 1, "enter after verifying replenished tickets");
+assert.equal(empty.sent[1].type, "start_labyrinth", "enter after verifying replenished tickets");
 
 const missedClick = harness({ entryFailures: 1 });
 missedClick.tick();
-assert.equal(missedClick.enter.clickCount, 1);
+assert.equal(missedClick.sent.length, 1);
 for (let index = 0; index < 15; index++) missedClick.tick();
-assert.equal(missedClick.enter.clickCount, 2, "retry an entry click with no ticket or page change");
+assert.equal(missedClick.sent.filter((item) => item.type === "start_labyrinth").length, 2,
+  "retry an unacknowledged entry request");
 missedClick.tick();
-assert.equal(missedClick.start.clickCount, 1, "start once the retried entry creates a maze");
+assert.equal(missedClick.sent.at(-1).type, "new_character_action",
+  "start once the retried entry creates a maze");
 
 const disconnected = harness({ entryFailures: 3 });
 disconnected.tick();
 for (let index = 0; index < 31; index++) disconnected.tick();
-assert.equal(disconnected.enter.clickCount, 2, "do not submit entry indefinitely");
+assert.equal(disconnected.sent.filter((item) => item.type === "start_labyrinth").length, 2,
+  "do not submit entry indefinitely");
 assert.equal(disconnected.state().phase, "paused", "surface a repeated entry failure");
-console.log("maze start, target, exit confirmations, refill: ok");
+
+const noSocket = harness({ captureSocket: false });
+noSocket.tick();
+assert.equal(noSocket.sent.length, 0, "wait for the game connection");
+assert.equal(noSocket.enter.clickCount, 0, "never fall back to ineffective button.click()");
+console.log("WebSocket entry, automation, escape, refill and retry: ok");
