@@ -38,7 +38,7 @@ class Element {
   }
 }
 
-function harness({ tickets = 2, active = false, floor = 1, target = 2, secondConfirm = true } = {}) {
+function harness({ tickets = 2, active = false, floor = 1, target = 2, secondConfirm = true, entryFailures = 0 } = {}) {
   let now = 100000;
   class Clock extends Date {
     constructor(...args) { super(...(args.length ? args : [now])); }
@@ -97,6 +97,7 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, secondCon
     return null;
   };
   enter.addEventListener("click", () => {
+    if (entryFailures > 0) { entryFailures--; return; }
     tickets--;
     updateTickets();
     floor = 1;
@@ -158,7 +159,7 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, secondCon
   host.shadowElements.get(".toggle").click();
   return {
     start, end, enter, confirm1, confirm2, refill, navSettings,
-    tick() { now += 1000; intervals[0](); },
+    tick(milliseconds = 2000) { now += milliseconds; intervals[0](); },
     finish() { floor = target; torches = 390; end.disabled = false; pageButtons = [start, end]; },
     state() { return store.get("mwi-labyrinth-loop:state:27538"); },
   };
@@ -167,7 +168,9 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, secondCon
 const flow = harness();
 flow.tick();
 assert.equal(flow.enter.clickCount, 1, "enter exactly once");
-flow.tick();
+flow.tick(1000);
+assert.equal(flow.start.clickCount, 0, "wait two seconds before the next game click");
+flow.tick(1000);
 assert.equal(flow.start.clickCount, 1, "start exactly once");
 flow.tick();
 assert.equal(flow.end.clickCount, 0, "do not end while automation runs");
@@ -204,4 +207,18 @@ empty.tick();
 empty.tick();
 empty.tick();
 assert.equal(empty.enter.clickCount, 1, "enter after verifying replenished tickets");
+
+const missedClick = harness({ entryFailures: 1 });
+missedClick.tick();
+assert.equal(missedClick.enter.clickCount, 1);
+for (let index = 0; index < 15; index++) missedClick.tick();
+assert.equal(missedClick.enter.clickCount, 2, "retry an entry click with no ticket or page change");
+missedClick.tick();
+assert.equal(missedClick.start.clickCount, 1, "start once the retried entry creates a maze");
+
+const disconnected = harness({ entryFailures: 3 });
+disconnected.tick();
+for (let index = 0; index < 31; index++) disconnected.tick();
+assert.equal(disconnected.enter.clickCount, 2, "do not submit entry indefinitely");
+assert.equal(disconnected.state().phase, "paused", "surface a repeated entry failure");
 console.log("maze start, target, exit confirmations, refill: ok");

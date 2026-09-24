@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Milky Way Idle 测试服迷宫循环
 // @namespace    https://github.com/1635781232/mwi-labyrinth-loop
-// @version      0.4.0
+// @version      0.4.2
 // @description  手动启用后，使用游戏内置自动化循环进入、开始、结束迷宫，并在测试服补充入场券。
 // @author       1635781232
 // @license      MIT
@@ -21,6 +21,7 @@
   "use strict";
 
   const id = "mwi-labyrinth-loop";
+  const CLICK_DELAY_MS = 2000;
   const characterId = new URL(location.href).searchParams.get("characterId");
   if (!characterId) return;
   const key = `${id}:state:${characterId}`;
@@ -35,11 +36,13 @@
     observed: false,
     before: null,
     confirmations: 0,
+    entryTickets: null,
+    entryAttempts: 0,
     since: Date.now(),
     error: "",
   };
   // Preserve a pending run across refreshes of this version.
-  if (saved.version === 6 && saved.enabled) {
+  if ([6, 7].includes(saved.version) && saved.enabled) {
     Object.assign(state, saved);
   }
   let lastClick = 0;
@@ -64,7 +67,7 @@
     visible(element) && (allowDisabled || !disabled(element)) && names.includes(label(element)));
 
   function save() {
-    GM_setValue(key, { ...state, version: 6 });
+    GM_setValue(key, { ...state, version: 7 });
     render();
   }
 
@@ -92,7 +95,7 @@
   }
 
   function click(element, action) {
-    if (!element || !visible(element) || disabled(element) || Date.now() - lastClick < 900) return false;
+    if (!element || !visible(element) || disabled(element) || Date.now() - lastClick < CLICK_DELAY_MS) return false;
     lastClick = Date.now();
     note("click", { action, target: label(element) });
     element.click();
@@ -201,6 +204,8 @@
     state.observed = false;
     state.before = null;
     state.confirmations = 0;
+    state.entryTickets = null;
+    state.entryAttempts = 0;
     state.error = "";
     phase("idle", "迷宫已结束，准备下一轮");
     note("mazeEnded");
@@ -313,8 +318,29 @@
         return;
       }
       if (state.phase === "entering") {
-        if (unknownDialog()) pause("入场时出现弹窗，请手动处理");
-        else status = "等待游戏创建迷宫";
+        if (unknownDialog()) return pause("入场时出现弹窗，请手动处理");
+        const tickets = entries();
+        if (state.entryTickets === null && tickets) {
+          state.entryTickets = tickets.current;
+          state.entryAttempts = 1;
+          state.since = Date.now();
+          save();
+        }
+        if (tickets && state.entryTickets !== null && tickets.current < state.entryTickets) {
+          status = "入场券已扣除，等待迷宫页面出现";
+        } else if (tickets && tickets.current === state.entryTickets &&
+                   button(["进入迷宫", "Enter Labyrinth"]) && Date.now() - state.since >= 15000) {
+          if (state.entryAttempts < 2 && click(button(["进入迷宫", "Enter Labyrinth"]), "重试进入迷宫")) {
+            state.entryAttempts++;
+            state.since = Date.now();
+            save();
+          } else if (state.entryAttempts >= 2) pause("点击进入迷宫后票数和页面均未变化，请检查游戏连接");
+        } else {
+          status = "等待游戏创建迷宫";
+        }
+        if (state.phase === "entering" && Date.now() - state.since > 60000) {
+          pause("入场券已扣除但迷宫页面未出现，请检查游戏连接");
+        }
         return;
       }
       if (state.phase.startsWith("refill")) return refill();
@@ -323,7 +349,11 @@
       if (!tickets) { navigate("labyrinth"); status = "打开迷宫主界面"; return; }
       if (tickets.current === 0) return refill();
       const enter = button(["进入迷宫", "Enter Labyrinth"]);
-      if (enter && click(enter, "进入迷宫")) phase("entering", "已点击进入，等待迷宫页面");
+      if (enter && click(enter, "进入迷宫")) {
+        state.entryTickets = tickets.current;
+        state.entryAttempts = 1;
+        phase("entering", "已点击进入，等待迷宫页面");
+      }
       else status = "等待进入迷宫按钮";
     } catch (error) {
       console.error(`[${id}]`, error);
@@ -344,7 +374,11 @@
     if (maze) {
       if (state.phase === "ending") phase("ending", "继续处理退出确认");
       else phase("waiting", "重新检查当前迷宫");
-    } else phase("idle", "重新检查迷宫入口");
+    } else {
+      state.entryTickets = null;
+      state.entryAttempts = 0;
+      phase("idle", "重新检查迷宫入口");
+    }
     schedule();
   }
 
@@ -404,7 +438,7 @@
     panel.toggle.addEventListener("click", toggle);
     panel.retry.addEventListener("click", retry);
     panel.copy.addEventListener("click", () => {
-      GM_setClipboard(JSON.stringify({ version: "0.4.0", characterId, state, status, logs }, null, 2));
+      GM_setClipboard(JSON.stringify({ version: "0.4.2", characterId, state, status, logs }, null, 2));
       status = "详细日志已复制";
       render();
     });
@@ -412,7 +446,7 @@
   }
 
   createPanel();
-  note("loaded", { version: "0.4.0" });
+  note("loaded", { version: "0.4.2" });
   new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true, characterData: true });
   setInterval(tick, 2000);
   window.addEventListener("beforeunload", unlock);
