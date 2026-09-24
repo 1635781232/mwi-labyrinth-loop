@@ -17,6 +17,7 @@ class FakeElement {
     this.listeners = new Map();
     this.attributes = new Map();
     this.clickCount = 0;
+    this.isConnected = true;
   }
 
   addEventListener(type, listener) {
@@ -53,7 +54,7 @@ class FakeElement {
   }
 
   getBoundingClientRect() {
-    return { width: 100, height: 30 };
+    return { left: 10, top: 10, right: 110, bottom: 40, width: 100, height: 30 };
   }
 
   hasAttribute(name) {
@@ -110,6 +111,9 @@ function createHarness() {
     querySelectorAll(selector) {
       if (selector === "button, a, [role='button']") return pageButtons;
       return [];
+    },
+    elementFromPoint() {
+      return immediateStart;
     },
   };
 

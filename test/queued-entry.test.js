@@ -75,6 +75,10 @@ class FakeElement {
     if (selector === "button, a, [role='button']") return this.children;
     return [];
   }
+
+  querySelector() {
+    return null;
+  }
 }
 
 function createHarness() {
@@ -96,6 +100,7 @@ function createHarness() {
   const immediateStart = new FakeElement("button", "立即开始");
   const labyrinthStop = new FakeElement("button", "停止");
   const end = new FakeElement("button", "结束迷宫");
+  end.rect = { left: 120, top: 10, right: 220, bottom: 40, width: 100, height: 30 };
   const cancelFirstExit = new FakeElement("button", "取消");
   const confirmFirstExit = new FakeElement("button", "确定");
   const firstExitDialog = new FakeElement("div", "确定要逃出迷宫吗？当前的迷宫将会结束。");
@@ -113,13 +118,39 @@ function createHarness() {
   staleTorchDialog.children = [staleConfirmTorchExit];
   staleConfirmTorchExit.parentElement = staleTorchDialog;
   const labyrinthNav = new FakeElement("div", "迷宫");
+  labyrinthNav.rect = { left: 230, top: 10, right: 330, bottom: 40, width: 100, height: 30 };
   const labyrinthNavIcon = new FakeElement("svg");
   labyrinthNavIcon.parentElement = labyrinthNav;
   let pageButtons = [staleEnter, enter, flee, unrelatedStop];
+  const labyrinthPanel = new FakeElement("div");
+  let progressFloor = 1;
+  let progressTorch = 400;
+  const floorLabel = new FakeElement("div");
+  const torchCount = new FakeElement("div");
+  const torchContainer = new FakeElement("div");
+  const torchIcon = new FakeElement("svg");
+  const buttonSection = new FakeElement("div");
+  buttonSection.querySelector = () => {
+    floorLabel.innerText = `第 ${progressFloor} 层`;
+    return floorLabel;
+  };
+  torchContainer.querySelector = () => {
+    torchCount.textContent = String(progressTorch);
+    return torchCount;
+  };
+  torchIcon.closest = () => torchContainer;
+  labyrinthPanel.querySelector = (selector) =>
+    selector.includes("buttonsSection") ? buttonSection : selector.includes("svg[aria-label") ? torchIcon : null;
+  labyrinthPanel.querySelectorAll = (selector) =>
+    selector === "button, a, [role='button']"
+      ? pageButtons.filter((button) => [immediateStart, labyrinthStop, end].includes(button))
+      : [];
+  end.closest = () => labyrinthPanel;
   let exitDialogStage = 0;
   let escapePending = false;
   immediateStart.addEventListener("click", () => {
-    pageButtons = [unrelatedStop, labyrinthStop, end];
+    // Start Now can be queued behind an unrelated action for an arbitrary time.
+    pageButtons = [unrelatedStop, immediateStart, end];
   });
 
   const body = new FakeElement("body");
@@ -170,10 +201,14 @@ function createHarness() {
       }
       return [];
     },
-    elementFromPoint() {
+    elementFromPoint(x) {
       if (exitDialogStage === 1) return confirmFirstExit;
       if (exitDialogStage === 2) return confirmTorchExit;
+      if (x >= 230) return labyrinthNav;
+      if (x >= 120 && pageButtons.includes(end)) return end;
       if (pageButtons.includes(enter)) return enter;
+      if (pageButtons.includes(labyrinthStop)) return labyrinthStop;
+      if (pageButtons.includes(immediateStart)) return immediateStart;
       return null;
     },
   };
@@ -266,6 +301,14 @@ function createHarness() {
     createQueuedLabyrinth() {
       pageButtons = [unrelatedStop, immediateStart, end];
     },
+    runQueuedLabyrinth() {
+      pageButtons = [unrelatedStop, labyrinthStop, end];
+    },
+    completeFastAutomation() {
+      progressFloor = 2;
+      progressTorch = 390;
+      pageButtons = [unrelatedStop, immediateStart, end];
+    },
     finishLabyrinthAutomation() {
       pageButtons = [unrelatedStop, immediateStart, end];
     },
@@ -303,6 +346,12 @@ harness.advance(1_000);
 harness.tick();
 assert.equal(harness.immediateStart.clickCount, 1, "the labyrinth must start when its queued turn begins");
 
+harness.advance(25_000);
+harness.tick();
+assert.equal(harness.end.clickCount, 0, "a queued start must not be mistaken for completed automation");
+assert.equal(harness.readState().phase, "awaitRunning", "a queued start must remain pending");
+
+harness.runQueuedLabyrinth();
 harness.advance(1_000);
 harness.tick();
 harness.finishLabyrinthAutomation();
@@ -344,8 +393,20 @@ harness.tick();
 assert.equal(harness.labyrinthNav.clickCount, 2, "navigation must retry while the labyrinth page is still unavailable");
 const copiedLog = harness.copyDetailedLog();
 assert.match(copiedLog, /Milky Way Idle 迷宫循环详细日志/);
-assert.match(copiedLog, /"version": "0\.3\.5"/);
+assert.match(copiedLog, /"version": "0\.3\.6"/);
 assert.match(copiedLog, /"hitTest":/);
 assert.match(copiedLog, /"dialogStillOpen": false/);
 assert.match(copiedLog, /"events": \[/);
 console.log("queued entry ignores unrelated stop controls: ok");
+
+const fastHarness = createHarness();
+vm.runInContext(fs.readFileSync(scriptPath, "utf8"), fastHarness.context, { filename: scriptPath });
+fastHarness.flushTimer();
+fastHarness.createQueuedLabyrinth();
+fastHarness.advance(1_000);
+fastHarness.tick();
+fastHarness.completeFastAutomation();
+fastHarness.advance(2_500);
+fastHarness.tick();
+assert.equal(fastHarness.end.clickCount, 1, "fast automation must be recognized from floor and torch progress");
+console.log("fast automation progress recognition: ok");

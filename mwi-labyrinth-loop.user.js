@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Milky Way Idle 测试服迷宫循环
 // @namespace    https://github.com/1635781232/mwi-labyrinth-loop
-// @version      0.3.5
+// @version      0.3.6
 // @description  使用游戏内置自动化循环进入、开始和结束迷宫，并在测试服自动补充入场券。
 // @author       1635781232
 // @license      MIT
@@ -22,8 +22,8 @@
   "use strict";
 
   const SCRIPT_ID = "mwi-labyrinth-loop";
-  const SCRIPT_VERSION = "0.3.5";
-  const STATE_VERSION = 4;
+  const SCRIPT_VERSION = "0.3.6";
+  const STATE_VERSION = 5;
   const TICK_MS = 2000;
   const MUTATION_DEBOUNCE_MS = 150;
   const ACTION_TIMEOUT_MS = 20000;
@@ -60,6 +60,8 @@
     enabled: false,
     ownedRun: false,
     startIssued: false,
+    automationObserved: false,
+    runProgressAtStart: null,
     phase: "idle",
     phaseSince: 0,
     blockedReason: "",
@@ -93,6 +95,18 @@
       return { ...defaultState };
     }
     if (saved.version !== STATE_VERSION) {
+      if (saved.version === 4 && saved.enabled === true && saved.ownedRun === true) {
+        return {
+          ...defaultState,
+          enabled: true,
+          ownedRun: true,
+          // The previous version could mark a queued click as completed automation.
+          // Re-evaluate the existing maze before issuing its next start.
+          startIssued: false,
+          phase: "awaitFirstStart",
+          phaseSince: Date.now(),
+        };
+      }
       return { ...defaultState, enabled: saved.enabled === true };
     }
     return { ...defaultState, ...saved };
@@ -228,8 +242,10 @@
       return { active: false, endButton: null, immediateStartButton: null, startButton: null, stopButton: null };
     }
 
-    const immediateStartButton = findExactButton(TEXT.immediateStart);
-    const startButton = immediateStartButton || findExactButton(TEXT.plainStart);
+    const labyrinthPanel = endButton.closest("[class*='LabyrinthPanel_labyrinthPanel']");
+    const root = labyrinthPanel || document;
+    const immediateStartButton = findExactButton(TEXT.immediateStart, root);
+    const startButton = immediateStartButton || findExactButton(TEXT.plainStart, root);
     return {
       active: true,
       endButton,
@@ -237,8 +253,31 @@
       startButton,
       // Other queued actions also expose a global Stop button. A visible
       // labyrinth Start button is authoritative: its automation is not running.
-      stopButton: startButton ? null : findExactButton(TEXT.stop),
+      stopButton: startButton ? null : labyrinthPanel ? findExactButton(TEXT.stop, labyrinthPanel) : null,
+      progress: readRunProgress(labyrinthPanel),
     };
+  }
+
+  function readRunProgress(panel) {
+    if (!panel) return null;
+    const section = panel.querySelector("[class*='LabyrinthPanel_buttonsSection']");
+    const label = section?.querySelector("[class*='LabyrinthPanel_label']");
+    const floorText = normalizeText(label?.innerText || label?.textContent);
+    const floorMatch = floorText.match(/第\s*(\d+)\s*层|Floor\s*(\d+)/i);
+    const torchIcon = panel.querySelector("svg[aria-label*='火把'], svg[aria-label*='torch' i]");
+    const torchContainer = torchIcon?.closest("[class*='Item_itemContainer']");
+    const torchText = normalizeText(torchContainer?.querySelector("[class*='Item_count']")?.textContent);
+    const torchCount = /^\d+$/.test(torchText) ? Number(torchText) : null;
+    const floor = floorMatch ? Number(floorMatch[1] || floorMatch[2]) : null;
+    return floor !== null || torchCount !== null ? { floor, torchCount } : null;
+  }
+
+  function runProgressChanged(before, after) {
+    if (!before || !after) return false;
+    return Boolean(
+      (before.floor !== null && after.floor !== null && before.floor !== after.floor) ||
+      (before.torchCount !== null && after.torchCount !== null && after.torchCount < before.torchCount)
+    );
   }
 
   function buildDebugReport() {
@@ -260,6 +299,8 @@
         hasImmediateStart: Boolean(controls.immediateStartButton),
         hasStart: Boolean(controls.startButton),
         hasStop: Boolean(controls.stopButton),
+        automationObserved: state.automationObserved,
+        progress: controls.progress || null,
       },
       dialogs,
       recentPanelLogs: [...logItems],
@@ -317,6 +358,10 @@
       hitTest: hit.accepted,
       hitElement: elementIdentity(hit.hit),
     });
+    if (!hit.accepted) {
+      recordDebug("actionRejected", { description, reason: "target not at hit point" });
+      return false;
+    }
     lastClickAt = Date.now();
     element.click();
     addLog(description);
@@ -704,6 +749,8 @@
       }
       state.ownedRun = false;
       state.startIssued = false;
+      state.automationObserved = false;
+      state.runProgressAtStart = null;
       state.blockedReason = "";
       state.blockedMessage = "";
       setPhase("idle");
@@ -754,6 +801,8 @@
 
     if (safeClick(enterButton, `进入迷宫（入场券 ${entries.current}/${entries.max}）`)) {
       state.startIssued = false;
+      state.automationObserved = false;
+      state.runProgressAtStart = null;
       setPhase("enterPending");
       setStatus("已点击进入迷宫，等待创建");
     }
@@ -764,11 +813,15 @@
       if (state.phase === "enterPending") {
         state.ownedRun = true;
         state.startIssued = false;
+        state.automationObserved = false;
+        state.runProgressAtStart = null;
         setPhase("awaitFirstStart");
         addLog("已接管本次迷宫");
       } else if (["idle", "openLabyrinth", "waitEntries", "waitEnter"].includes(state.phase)) {
         state.ownedRun = true;
         state.startIssued = false;
+        state.automationObserved = false;
+        state.runProgressAtStart = null;
         setPhase("awaitFirstStart");
         addLog("已接管当前迷宫");
       } else {
@@ -801,11 +854,20 @@
     }
 
     if (controls.stopButton) {
-      if (state.phase !== "running" || !state.startIssued) {
-        setPhase("running", { startIssued: true });
+      if (state.phase !== "running" || !state.startIssued || !state.automationObserved) {
+        setPhase("running", { startIssued: true, automationObserved: true });
       }
       setStatus("游戏内置迷宫自动化正在运行");
       return;
+    }
+
+    if (!state.automationObserved && runProgressChanged(state.runProgressAtStart, controls.progress)) {
+      state.automationObserved = true;
+      recordDebug("labyrinthProgressObserved", {
+        before: state.runProgressAtStart,
+        after: controls.progress,
+      });
+      saveState();
     }
 
     if (!state.startIssued) {
@@ -818,6 +880,7 @@
       }
       if (safeClick(firstStartButton, "首次启动迷宫自动化")) {
         state.startIssued = true;
+        state.runProgressAtStart = controls.progress;
         setPhase("awaitRunning");
         setStatus("已启动一次，等待运行或结束状态");
       }
@@ -825,6 +888,10 @@
     }
 
     if (controls.startButton && !controls.stopButton) {
+      if (!state.automationObserved) {
+        setStatus("已请求开始，等待迷宫动作在队列中运行");
+        return;
+      }
       if (state.phase === "awaitRunning" && Date.now() - state.phaseSince < START_SETTLE_MS) {
         setStatus("已启动一次，等待界面状态稳定");
         return;
@@ -834,7 +901,7 @@
     }
 
     if (state.phase === "awaitRunning") {
-      if (hasTimedOut()) block("startTimeout", "启动后未识别到运行或结束状态");
+      if (hasTimedOut()) block("startTimeout", "启动后未识别到迷宫运行状态");
       else setStatus("等待迷宫自动化状态变化");
       return;
     }
@@ -942,6 +1009,8 @@
     } else {
       state.ownedRun = false;
       state.startIssued = false;
+      state.automationObserved = false;
+      state.runProgressAtStart = null;
       setPhase("idle");
     }
     addLog("已手动重试");
@@ -956,6 +1025,8 @@
     if (!state.enabled) {
       state.ownedRun = false;
       state.startIssued = false;
+      state.automationObserved = false;
+      state.runProgressAtStart = null;
       state.phase = "idle";
       releaseControllerLock();
       addLog("脚本已停用，当前迷宫不再托管");
