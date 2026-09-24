@@ -90,6 +90,7 @@ function createHarness() {
   }
 
   const enter = new FakeElement("button", "进入迷宫");
+  const staleEnter = new FakeElement("button", "进入迷宫");
   const flee = new FakeElement("button", "逃跑");
   const unrelatedStop = new FakeElement("button", "停止");
   const immediateStart = new FakeElement("button", "立即开始");
@@ -114,7 +115,7 @@ function createHarness() {
   const labyrinthNav = new FakeElement("div", "迷宫");
   const labyrinthNavIcon = new FakeElement("svg");
   labyrinthNavIcon.parentElement = labyrinthNav;
-  let pageButtons = [enter, flee, unrelatedStop];
+  let pageButtons = [staleEnter, enter, flee, unrelatedStop];
   let exitDialogStage = 0;
   let escapePending = false;
   immediateStart.addEventListener("click", () => {
@@ -172,6 +173,7 @@ function createHarness() {
     elementFromPoint() {
       if (exitDialogStage === 1) return confirmFirstExit;
       if (exitDialogStage === 2) return confirmTorchExit;
+      if (pageButtons.includes(enter)) return enter;
       return null;
     },
   };
@@ -240,6 +242,7 @@ function createHarness() {
   return {
     context,
     enter,
+    staleEnter,
     flee,
     end,
     confirmFirstExit,
@@ -288,6 +291,7 @@ vm.runInContext(fs.readFileSync(scriptPath, "utf8"), harness.context, { filename
 
 harness.flushTimer();
 assert.equal(harness.enter.clickCount, 1, "the labyrinth entry must be submitted once");
+assert.equal(harness.staleEnter.clickCount, 0, "an occluded stale entry button must not be clicked");
 
 harness.advance(25_000);
 harness.tick();
@@ -340,7 +344,7 @@ harness.tick();
 assert.equal(harness.labyrinthNav.clickCount, 2, "navigation must retry while the labyrinth page is still unavailable");
 const copiedLog = harness.copyDetailedLog();
 assert.match(copiedLog, /Milky Way Idle 迷宫循环详细日志/);
-assert.match(copiedLog, /"version": "0\.3\.4"/);
+assert.match(copiedLog, /"version": "0\.3\.5"/);
 assert.match(copiedLog, /"hitTest":/);
 assert.match(copiedLog, /"dialogStillOpen": false/);
 assert.match(copiedLog, /"events": \[/);

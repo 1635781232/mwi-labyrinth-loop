@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Milky Way Idle 测试服迷宫循环
 // @namespace    https://github.com/1635781232/mwi-labyrinth-loop
-// @version      0.3.4
+// @version      0.3.5
 // @description  使用游戏内置自动化循环进入、开始和结束迷宫，并在测试服自动补充入场券。
 // @author       1635781232
 // @license      MIT
@@ -22,7 +22,7 @@
   "use strict";
 
   const SCRIPT_ID = "mwi-labyrinth-loop";
-  const SCRIPT_VERSION = "0.3.4";
+  const SCRIPT_VERSION = "0.3.5";
   const STATE_VERSION = 4;
   const TICK_MS = 2000;
   const MUTATION_DEBOUNCE_MS = 150;
@@ -210,13 +210,16 @@
 
   function findExactButton(texts, root = document, includeDisabled = true) {
     const wanted = new Set(texts.map(normalizeText));
-    return (
-      clickableElements(root).find((element) => {
+    const candidates = clickableElements(root).filter((element) => {
         if (!isVisible(element)) return false;
         if (!includeDisabled && isDisabled(element)) return false;
         return wanted.has(normalizeText(element.innerText || element.textContent));
-      }) || null
-    );
+      });
+    const hitTested = candidates
+      .map((element, domOrder) => ({ element, domOrder, hit: hitTest(element), zIndex: maximumZIndex(element) }))
+      .filter((candidate) => candidate.hit.accepted)
+      .sort((left, right) => right.zIndex - left.zIndex || right.domOrder - left.domOrder);
+    return hitTested[0]?.element || candidates[0] || null;
   }
 
   function getActiveControls() {
@@ -305,6 +308,15 @@
   function safeClick(element, description) {
     if (!element || !isVisible(element) || isDisabled(element)) return false;
     if (Date.now() - lastClickAt < CLICK_GUARD_MS) return false;
+    const hit = hitTest(element);
+    recordDebug("actionTarget", {
+      description,
+      text: normalizeText(element.innerText || element.textContent),
+      rect: hit.rect,
+      isConnected: Boolean(element.isConnected),
+      hitTest: hit.accepted,
+      hitElement: elementIdentity(hit.hit),
+    });
     lastClickAt = Date.now();
     element.click();
     addLog(description);
@@ -849,6 +861,17 @@
       }
       auditPendingEscapeActivation();
       if (state.phase === "blocked") {
+        if (
+          state.blockedReason === "enterTimeout" &&
+          !getActiveControls().active &&
+          findExactButton(TEXT.enter, document, false)
+        ) {
+          state.blockedReason = "";
+          state.blockedMessage = "";
+          setPhase("idle");
+          addLog("检测到可用的进入按钮，自动恢复重试");
+          return;
+        }
         // A confirmation dialog can appear just after the timeout boundary.
         // Resume only an owned end-confirmation flow so it can handle it.
         if (state.ownedRun && state.blockedReason === "endTimeout" && getActiveControls().active) {
