@@ -110,6 +110,7 @@ function createHarness() {
   labyrinthNavIcon.parentElement = labyrinthNav;
   let pageButtons = [enter, flee, unrelatedStop];
   let exitDialogStage = 0;
+  let torchAcknowledged = false;
   immediateStart.addEventListener("click", () => {
     pageButtons = [unrelatedStop, labyrinthStop, end];
   });
@@ -117,6 +118,11 @@ function createHarness() {
   const body = new FakeElement("body");
   body.innerText = "入场券: 5 / 5";
   end.addEventListener("click", () => {
+    if (torchAcknowledged) {
+      pageButtons = [];
+      body.innerText = "";
+      return;
+    }
     exitDialogStage = 1;
   });
   confirmFirstExit.addEventListener("click", () => {
@@ -124,8 +130,7 @@ function createHarness() {
   });
   confirmTorchExit.addEventListener("click", () => {
     exitDialogStage = 0;
-    pageButtons = [];
-    body.innerText = "";
+    torchAcknowledged = true;
   });
   const timers = new Map();
   const intervals = [];
@@ -300,6 +305,10 @@ assert.equal(harness.confirmTorchExit.clickCount, 1, "the newer torch confirmati
 
 harness.advance(2_000);
 harness.tick();
+assert.equal(harness.end.clickCount, 2, "ending must be submitted again after the torch warning is acknowledged");
+
+harness.advance(2_000);
+harness.tick();
 assert.equal(harness.labyrinthNav.clickCount, 1, "the sidebar icon container must reopen the labyrinth page");
 
 harness.advance(4_000);
@@ -307,6 +316,6 @@ harness.tick();
 assert.equal(harness.labyrinthNav.clickCount, 2, "navigation must retry while the labyrinth page is still unavailable");
 const copiedLog = harness.copyDetailedLog();
 assert.match(copiedLog, /Milky Way Idle 迷宫循环详细日志/);
-assert.match(copiedLog, /"version": "0\.3\.1"/);
+assert.match(copiedLog, /"version": "0\.3\.2"/);
 assert.match(copiedLog, /"events": \[/);
 console.log("queued entry ignores unrelated stop controls: ok");

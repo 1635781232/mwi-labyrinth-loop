@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Milky Way Idle 测试服迷宫循环
 // @namespace    https://github.com/1635781232/mwi-labyrinth-loop
-// @version      0.3.1
+// @version      0.3.2
 // @description  使用游戏内置自动化循环进入、开始和结束迷宫，并在测试服自动补充入场券。
 // @author       1635781232
 // @license      MIT
@@ -22,7 +22,7 @@
   "use strict";
 
   const SCRIPT_ID = "mwi-labyrinth-loop";
-  const SCRIPT_VERSION = "0.3.1";
+  const SCRIPT_VERSION = "0.3.2";
   const STATE_VERSION = 4;
   const TICK_MS = 2000;
   const MUTATION_DEBOUNCE_MS = 150;
@@ -35,6 +35,7 @@
   const FALLBACK_LOCK_HEARTBEAT_MS = 5000;
   const MAX_ESCAPE_CONFIRMATION_CLICKS = 4;
   const ESCAPE_CONFIRMATION_RETRY_MS = 2000;
+  const POST_TORCH_END_RETRY_MS = 1200;
 
   const TEXT = {
     enter: ["进入迷宫", "Enter Labyrinth"],
@@ -74,6 +75,8 @@
   let lastEscapeDialogSignature = "";
   let lastEscapeDialogClickAt = 0;
   let escapeConfirmationCount = 0;
+  let lastTorchConfirmationAt = 0;
+  let postTorchEndRetryIssued = false;
   let statusText = "脚本已停用";
   let logItems = [];
   let debugLogItems = loadDebugLog();
@@ -361,6 +364,17 @@
     return Array.from(new Set([...semantic, ...conventional]));
   }
 
+  function isKnownTorchEscapeDialog(text) {
+    const normalized = normalizeText(text);
+    return (
+      /真的.{0,12}(确定|确认).{0,40}(火把|火炬).{0,40}(进度|继续)/i.test(normalized) ||
+      /(确定|确认|结束|离开|逃离|逃出|继续).{0,50}(火把|火炬)|(火把|火炬).{0,50}(确定|确认|结束|离开|逃离|逃出|继续|探索)/i.test(
+        normalized
+      ) ||
+      /really\s+sure.{0,80}torches?\s+remaining.{0,80}(?:more\s+progress|progress)/i.test(normalized)
+    );
+  }
+
   function isKnownEscapeDialog(text) {
     const normalized = normalizeText(text);
     const knownFirstStep =
@@ -368,12 +382,7 @@
       /escape\s+(?:the\s+)?labyrinth|end\s+(?:the\s+)?labyrinth|labyrinth.{0,30}(?:will\s+end|escape)/i.test(
         normalized
       );
-    const knownTorchStep =
-      /真的.{0,12}(确定|确认).{0,40}(火把|火炬).{0,40}(进度|继续)/i.test(normalized) ||
-      /(确定|确认|结束|离开|逃离|逃出|继续).{0,50}(火把|火炬)|(火把|火炬).{0,50}(确定|确认|结束|离开|逃离|逃出|继续|探索)/i.test(
-        normalized
-      ) ||
-      /really\s+sure.{0,80}torches?\s+remaining.{0,80}(?:more\s+progress|progress)/i.test(normalized);
+    const knownTorchStep = isKnownTorchEscapeDialog(normalized);
     const entrySupplyWarning =
       /补给.{0,20}(不足|未满)|未带满|携带.{0,20}火把.{0,20}进入|entering\s+with.{0,50}torches?\s+instead|entering\s+without.{0,50}suppl/i.test(
         normalized
@@ -434,6 +443,10 @@
     lastEscapeDialogSignature = match.signature;
     lastEscapeDialogClickAt = Date.now();
     escapeConfirmationCount += 1;
+    if (isKnownTorchEscapeDialog(match.dialogText)) {
+      lastTorchConfirmationAt = Date.now();
+      postTorchEndRetryIssued = false;
+    }
     return true;
   }
 
@@ -465,6 +478,8 @@
     lastEscapeDialogSignature = "";
     lastEscapeDialogClickAt = 0;
     escapeConfirmationCount = 0;
+    lastTorchConfirmationAt = 0;
+    postTorchEndRetryIssued = false;
     setPhase("ending");
     setStatus("正在结束迷宫");
   }
@@ -648,6 +663,24 @@
 
     if (state.phase === "ending") {
       const confirmed = handleEscapeConfirmation();
+      if (confirmed) {
+        setStatus("正在确认并结束迷宫");
+        return;
+      }
+      const knownDialogStillOpen = escapeDialogCandidates().some((dialog) =>
+        isKnownEscapeDialog(dialog.innerText || dialog.textContent)
+      );
+      if (
+        lastTorchConfirmationAt > 0 &&
+        !postTorchEndRetryIssued &&
+        !knownDialogStillOpen &&
+        Date.now() - lastTorchConfirmationAt >= POST_TORCH_END_RETRY_MS &&
+        safeClick(controls.endButton, "火炬确认后再次提交结束迷宫")
+      ) {
+        postTorchEndRetryIssued = true;
+        setStatus("已确认火炬提示，正在再次提交结束");
+        return;
+      }
       if (!confirmed && hasUnknownEscapeDialog()) {
         block("unknownDialog", "结束迷宫出现未知弹窗，请手动处理");
         return;
@@ -767,6 +800,8 @@
         lastEscapeDialogSignature = "";
         lastEscapeDialogClickAt = 0;
         escapeConfirmationCount = 0;
+        lastTorchConfirmationAt = 0;
+        postTorchEndRetryIssued = false;
         const knownDialogStillOpen = escapeDialogCandidates().some((dialog) =>
           isKnownEscapeDialog(dialog.innerText || dialog.textContent)
         );
