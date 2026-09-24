@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Milky Way Idle 测试服迷宫循环
 // @namespace    https://github.com/1635781232/mwi-labyrinth-loop
-// @version      0.2.5
+// @version      0.2.6
 // @description  使用游戏内置自动化循环进入、开始和结束迷宫，并在测试服自动补充入场券。
 // @author       1635781232
 // @license      MIT
@@ -21,7 +21,7 @@
   "use strict";
 
   const SCRIPT_ID = "mwi-labyrinth-loop";
-  const STATE_VERSION = 3;
+  const STATE_VERSION = 4;
   const TICK_MS = 2000;
   const MUTATION_DEBOUNCE_MS = 150;
   const ACTION_TIMEOUT_MS = 20000;
@@ -34,6 +34,7 @@
 
   const TEXT = {
     enter: ["进入迷宫", "Enter Labyrinth"],
+    flee: ["逃跑", "Flee"],
     immediateStart: ["立即开始", "Start Now"],
     plainStart: ["开始", "Start"],
     stop: ["停止", "Stop"],
@@ -445,6 +446,8 @@
     if (state.phase === "enterPending") {
       if (hasUnknownDialog()) {
         block("entryDialog", "进入迷宫出现补给或未知确认框，请手动处理");
+      } else if (findExactButton(TEXT.enter, document, false) && findExactButton(TEXT.flee, document, false)) {
+        setStatus("迷宫已加入游戏队列，等待当前战斗完成");
       } else if (hasTimedOut()) {
         block("enterTimeout", "进入迷宫超时");
       } else {
