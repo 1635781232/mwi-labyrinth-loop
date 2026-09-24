@@ -84,9 +84,14 @@ function createHarness() {
 
   const enter = new FakeElement("button", "进入迷宫");
   const flee = new FakeElement("button", "逃跑");
+  const unrelatedStop = new FakeElement("button", "停止");
   const immediateStart = new FakeElement("button", "立即开始");
+  const labyrinthStop = new FakeElement("button", "停止");
   const end = new FakeElement("button", "结束迷宫");
-  let pageButtons = [enter, flee];
+  let pageButtons = [enter, flee, unrelatedStop];
+  immediateStart.addEventListener("click", () => {
+    pageButtons = [unrelatedStop, labyrinthStop, end];
+  });
 
   const body = new FakeElement("body");
   body.innerText = "入场券: 5 / 5";
@@ -172,6 +177,7 @@ function createHarness() {
     context,
     enter,
     flee,
+    end,
     immediateStart,
     advance(milliseconds) {
       now += milliseconds;
@@ -187,7 +193,10 @@ function createHarness() {
       intervals[0]();
     },
     createQueuedLabyrinth() {
-      pageButtons = [immediateStart, end];
+      pageButtons = [unrelatedStop, immediateStart, end];
+    },
+    finishLabyrinthAutomation() {
+      pageButtons = [unrelatedStop, immediateStart, end];
     },
     readState() {
       return JSON.parse(storage.get(stateKey));
@@ -211,4 +220,14 @@ harness.createQueuedLabyrinth();
 harness.advance(1_000);
 harness.tick();
 assert.equal(harness.immediateStart.clickCount, 1, "the labyrinth must start when its queued turn begins");
-console.log("queued entry waits without stopping combat: ok");
+
+harness.advance(1_000);
+harness.tick();
+harness.finishLabyrinthAutomation();
+harness.advance(2_500);
+harness.tick();
+assert.equal(harness.flee.clickCount, 0, "unrelated actions must remain untouched");
+assert.equal(harness.immediateStart.clickCount, 1, "the labyrinth start button must only be clicked once");
+assert.equal(harness.end.clickCount, 1, "the labyrinth must be ended after its automation stops");
+assert.equal(harness.readState().phase, "ending", "the labyrinth must end after its own automation stops");
+console.log("queued entry ignores unrelated stop controls: ok");

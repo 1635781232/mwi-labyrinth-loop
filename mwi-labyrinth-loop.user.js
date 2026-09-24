@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Milky Way Idle 测试服迷宫循环
 // @namespace    https://github.com/1635781232/mwi-labyrinth-loop
-// @version      0.2.6
+// @version      0.2.7
 // @description  使用游戏内置自动化循环进入、开始和结束迷宫，并在测试服自动补充入场券。
 // @author       1635781232
 // @license      MIT
@@ -156,12 +156,15 @@
     }
 
     const immediateStartButton = findExactButton(TEXT.immediateStart);
+    const startButton = immediateStartButton || findExactButton(TEXT.plainStart);
     return {
       active: true,
       endButton,
       immediateStartButton,
-      startButton: immediateStartButton || findExactButton(TEXT.plainStart),
-      stopButton: findExactButton(TEXT.stop),
+      startButton,
+      // Other queued actions also expose a global Stop button. A visible
+      // labyrinth Start button is authoritative: its automation is not running.
+      stopButton: startButton ? null : findExactButton(TEXT.stop),
     };
   }
 
