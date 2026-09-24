@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Milky Way Idle 测试服迷宫循环
 // @namespace    https://github.com/1635781232/mwi-labyrinth-loop
-// @version      0.2.3
+// @version      0.2.4
 // @description  使用游戏内置自动化循环进入、开始和结束迷宫，并在测试服自动补充入场券。
 // @author       1635781232
 // @license      MIT
@@ -26,6 +26,7 @@
   const MUTATION_DEBOUNCE_MS = 150;
   const ACTION_TIMEOUT_MS = 20000;
   const START_SETTLE_MS = 2000;
+  const END_SETTLE_MS = 1500;
   const CLICK_GUARD_MS = 900;
   const FALLBACK_LOCK_TTL_MS = 15000;
   const FALLBACK_LOCK_HEARTBEAT_MS = 5000;
@@ -36,7 +37,7 @@
     immediateStart: ["立即开始", "Start Now"],
     plainStart: ["开始", "Start"],
     stop: ["停止", "Stop"],
-    end: ["结束迷宫", "逃离迷宫", "Escape Labyrinth", "Escape"],
+    end: ["结束迷宫", "逃出迷宫", "逃离迷宫", "Escape Labyrinth", "Escape"],
     refill: ["补充入场券", "补充迷宫入场券", "Refill Entries", "Refill Labyrinth Entries"],
     confirm: ["确认", "确定", "确认结束", "仍然结束", "是", "Confirm", "Yes"],
   };
@@ -307,6 +308,13 @@
     return dialogCandidates().some((dialog) => normalizeText(dialog.innerText || dialog.textContent).length > 0);
   }
 
+  function hasUnknownEscapeDialog() {
+    return dialogCandidates().some((dialog) => {
+      const dialogText = normalizeText(dialog.innerText || dialog.textContent);
+      return dialogText.length > 0 && !isKnownEscapeDialog(dialogText);
+    });
+  }
+
   function findNavigation(section) {
     const icon = document.querySelector(`svg[aria-label="navigationBar.${section}"]`);
     const link = icon?.closest("[class*='NavigationBar_navigationLink']");
@@ -395,7 +403,34 @@
   }
 
   function handleInactiveRun() {
+    const entries = readEntries();
+
+    if (state.ownedRun && !entries) {
+      if (state.phase !== "returnToOwnedRun") {
+        if (navigateTo("labyrinth", "返回迷宫继续监控")) {
+          setPhase("returnToOwnedRun");
+          setStatus("正在返回迷宫继续监控");
+        } else {
+          block("ownedRunPageMissing", "找不到迷宫入口，无法继续监控当前迷宫");
+        }
+      } else if (hasTimedOut()) {
+        block("ownedRunPageMissing", "返回迷宫超时，无法继续监控当前迷宫");
+      } else {
+        setStatus("等待迷宫页面恢复");
+      }
+      return;
+    }
+
     if (state.ownedRun) {
+      if (state.phase !== "verifyEnded") {
+        setPhase("verifyEnded");
+        setStatus("正在确认迷宫已结束");
+        return;
+      }
+      if (Date.now() - state.phaseSince < END_SETTLE_MS) {
+        setStatus("正在确认迷宫已结束");
+        return;
+      }
       state.ownedRun = false;
       state.startIssued = false;
       state.blockedReason = "";
@@ -420,7 +455,6 @@
       return;
     }
 
-    const entries = readEntries();
     if (!entries) {
       if (!["openLabyrinth", "waitEntries"].includes(state.phase)) {
         if (navigateTo("labyrinth", "打开迷宫页面")) {
@@ -471,14 +505,20 @@
     }
 
     if (state.phase === "ending") {
-      handleEscapeConfirmation();
+      const confirmed = handleEscapeConfirmation();
+      if (!confirmed && hasUnknownEscapeDialog()) {
+        block("unknownDialog", "结束迷宫出现未知弹窗，请手动处理");
+        return;
+      }
       if (hasTimedOut()) block("endTimeout", "结束迷宫超时，请检查确认框");
       else setStatus("正在确认并结束迷宫");
       return;
     }
 
     if (controls.stopButton) {
-      if (state.phase !== "running") setPhase("running");
+      if (state.phase !== "running" || !state.startIssued) {
+        setPhase("running", { startIssued: true });
+      }
       setStatus("游戏内置迷宫自动化正在运行");
       return;
     }
@@ -550,6 +590,10 @@
       }
 
       const controls = getActiveControls();
+      if (!["ending", "enterPending", "verifyRefill"].includes(state.phase) && hasUnknownDialog()) {
+        block("unknownDialog", "页面出现未知弹窗，请手动处理");
+        return;
+      }
       if (controls.active) handleActiveRun(controls);
       else handleInactiveRun();
     } catch (error) {
@@ -589,6 +633,8 @@
     } else if (controls.active && ["enterTimeout", "entryDialog"].includes(reason)) {
       state.ownedRun = true;
       setPhase("awaitFirstStart");
+    } else if (state.ownedRun && reason === "ownedRunPageMissing") {
+      setPhase("returnToOwnedRun");
     } else {
       state.ownedRun = false;
       state.startIssued = false;
