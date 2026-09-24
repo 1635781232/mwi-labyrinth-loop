@@ -1,0 +1,29 @@
+name: Release userscript
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate userscript metadata
+        shell: bash
+        run: |
+          grep -q '^// ==UserScript==$' mwi-labyrinth-loop.user.js
+          grep -q '^// ==/UserScript==$' mwi-labyrinth-loop.user.js
+          grep -q "^// @version      ${GITHUB_REF_NAME#v}$" mwi-labyrinth-loop.user.js
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: mwi-labyrinth-loop.user.js

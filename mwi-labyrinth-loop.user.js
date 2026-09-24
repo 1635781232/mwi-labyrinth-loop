@@ -1,0 +1,692 @@
+// ==UserScript==
+// @name         Milky Way Idle 测试服迷宫循环
+// @namespace    https://github.com/1635781232/mwi-labyrinth-loop
+// @version      0.2.0
+// @description  使用游戏内置自动化循环进入、开始和结束迷宫，并在测试服自动补充入场券。
+// @author       1635781232
+// @license      MIT
+// @match        https://test.milkywayidle.com/game*
+// @run-at       document-idle
+// @noframes
+// @updateURL    https://raw.githubusercontent.com/1635781232/mwi-labyrinth-loop/main/mwi-labyrinth-loop.user.js
+// @downloadURL  https://raw.githubusercontent.com/1635781232/mwi-labyrinth-loop/main/mwi-labyrinth-loop.user.js
+// @supportURL   https://github.com/1635781232/mwi-labyrinth-loop/issues
+// @homepageURL  https://github.com/1635781232/mwi-labyrinth-loop
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_addValueChangeListener
+// ==/UserScript==
+
+(function () {
+  "use strict";
+
+  const SCRIPT_ID = "mwi-labyrinth-loop";
+  const STATE_VERSION = 2;
+  const TICK_MS = 2000;
+  const MUTATION_DEBOUNCE_MS = 150;
+  const ACTION_TIMEOUT_MS = 20000;
+  const START_SETTLE_MS = 2000;
+  const CLICK_GUARD_MS = 900;
+  const FALLBACK_LOCK_TTL_MS = 15000;
+  const FALLBACK_LOCK_HEARTBEAT_MS = 5000;
+  const MAX_ESCAPE_CONFIRMATIONS = 2;
+
+  const TEXT = {
+    enter: ["进入迷宫", "Enter Labyrinth"],
+    immediateStart: ["立即开始", "Start Now"],
+    plainStart: ["开始", "Start"],
+    stop: ["停止", "Stop"],
+    end: ["结束迷宫", "逃离迷宫", "Escape Labyrinth", "Escape"],
+    settings: ["设置", "Settings"],
+    labyrinthNav: ["返回迷宫", "迷宫入口", "Labyrinth", "迷宫"],
+    refill: ["补充入场券", "补充迷宫入场券", "Refill Entries", "Refill Labyrinth Entries"],
+    confirm: ["确认", "确定", "确认结束", "仍然结束", "是", "Confirm", "Yes"],
+  };
+
+  const characterId = new URL(location.href).searchParams.get("characterId");
+  const stateKey = `${SCRIPT_ID}:state:${characterId || "missing"}`;
+  const fallbackLockKey = `${SCRIPT_ID}:lock:${characterId || "missing"}`;
+  const webLockName = `${SCRIPT_ID}:${location.origin}:${characterId || "missing"}`;
+  const instanceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+
+  const defaultState = {
+    version: STATE_VERSION,
+    enabled: false,
+    ownedRun: false,
+    startIssued: false,
+    phase: "idle",
+    phaseSince: 0,
+    blockedReason: "",
+    blockedMessage: "",
+  };
+
+  let state = loadState();
+  let evaluating = false;
+  let evaluationQueued = false;
+  let debounceTimer = 0;
+  let lastClickAt = 0;
+  let lastEscapeDialogSignature = "";
+  let escapeConfirmationCount = 0;
+  let statusText = "脚本已停用";
+  let logItems = [];
+  let ui = null;
+
+  let webLockHeld = false;
+  let webLockPending = false;
+  let releaseWebLock = null;
+
+  function loadState() {
+    const saved = GM_getValue(stateKey, null);
+    if (!saved || typeof saved !== "object" || saved.version !== STATE_VERSION) {
+      return { ...defaultState };
+    }
+    return { ...defaultState, ...saved };
+  }
+
+  function saveState() {
+    GM_setValue(stateKey, { ...state, version: STATE_VERSION });
+    renderUi();
+  }
+
+  function setPhase(phase, extra = {}) {
+    if (state.phase !== phase) {
+      state.phase = phase;
+      state.phaseSince = Date.now();
+    }
+    Object.assign(state, extra);
+    saveState();
+  }
+
+  function setStatus(text) {
+    if (statusText === text) return;
+    statusText = text;
+    renderUi();
+  }
+
+  function addLog(text) {
+    const time = new Date().toLocaleTimeString([], { hour12: false });
+    logItems.unshift(`${time}  ${text}`);
+    logItems = logItems.slice(0, 5);
+    renderUi();
+  }
+
+  function normalizeText(value) {
+    return String(value || "").replace(/\s+/g, " ").trim();
+  }
+
+  function isVisible(element) {
+    if (!(element instanceof HTMLElement)) return false;
+    const style = getComputedStyle(element);
+    if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) return false;
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function isDisabled(element) {
+    return Boolean(
+      element.disabled ||
+      element.hasAttribute("disabled") ||
+      element.getAttribute("aria-disabled") === "true"
+    );
+  }
+
+  function clickableElements(root = document) {
+    return Array.from(root.querySelectorAll("button, a, [role='button']"));
+  }
+
+  function findExactButton(texts, root = document, includeDisabled = true) {
+    const wanted = new Set(texts.map(normalizeText));
+    return (
+      clickableElements(root).find((element) => {
+        if (!isVisible(element)) return false;
+        if (!includeDisabled && isDisabled(element)) return false;
+        return wanted.has(normalizeText(element.innerText || element.textContent));
+      }) || null
+    );
+  }
+
+  function getActiveControls() {
+    const endButton = findExactButton(TEXT.end);
+    if (!endButton) {
+      return { active: false, endButton: null, immediateStartButton: null, startButton: null, stopButton: null };
+    }
+
+    const immediateStartButton = findExactButton(TEXT.immediateStart);
+    return {
+      active: true,
+      endButton,
+      immediateStartButton,
+      startButton: immediateStartButton || findExactButton(TEXT.plainStart),
+      stopButton: findExactButton(TEXT.stop),
+    };
+  }
+
+  function readEntries() {
+    const text = normalizeText(document.body?.innerText);
+    const patterns = [
+      /入场券\s*[:：]?\s*(\d+)\s*\/\s*(\d+)/i,
+      /(\d+)\s*\/\s*(\d+)\s*入场券/i,
+      /(?:Labyrinth\s+)?Entries\s*[:：]?\s*(\d+)\s*\/\s*(\d+)/i,
+      /(\d+)\s*\/\s*(\d+)\s*(?:Labyrinth\s+)?Entries/i,
+    ];
+
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match) return { current: Number(match[1]), max: Number(match[2]) };
+    }
+    return null;
+  }
+
+  function safeClick(element, description) {
+    if (!element || !isVisible(element) || isDisabled(element)) return false;
+    if (Date.now() - lastClickAt < CLICK_GUARD_MS) return false;
+    lastClickAt = Date.now();
+    element.click();
+    addLog(description);
+    return true;
+  }
+
+  function getFallbackLock() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(fallbackLockKey) || "null");
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function acquireFallbackLock() {
+    const now = Date.now();
+    const lock = getFallbackLock();
+    if (lock && lock.instanceId !== instanceId && now - Number(lock.timestamp || 0) < FALLBACK_LOCK_TTL_MS) {
+      return false;
+    }
+    if (lock?.instanceId === instanceId) return true;
+    localStorage.setItem(fallbackLockKey, JSON.stringify({ instanceId, timestamp: now }));
+    return getFallbackLock()?.instanceId === instanceId;
+  }
+
+  function ensureControllerLock() {
+    if (navigator.locks?.request) {
+      if (webLockHeld) return true;
+      if (!webLockPending) {
+        webLockPending = true;
+        navigator.locks
+          .request(webLockName, { ifAvailable: true }, async (lock) => {
+            webLockPending = false;
+            if (!lock) {
+              setStatus("另一个同角色标签页正在运行脚本");
+              return;
+            }
+            webLockHeld = true;
+            scheduleEvaluate();
+            await new Promise((resolve) => {
+              releaseWebLock = resolve;
+            });
+            webLockHeld = false;
+            releaseWebLock = null;
+          })
+          .catch((error) => {
+            webLockPending = false;
+            console.error(`[${SCRIPT_ID}] Web Lock`, error);
+            scheduleEvaluate();
+          });
+      }
+      return false;
+    }
+    return acquireFallbackLock();
+  }
+
+  function refreshFallbackLock() {
+    if (navigator.locks?.request || !state.enabled) return;
+    const lock = getFallbackLock();
+    if (lock?.instanceId === instanceId) {
+      localStorage.setItem(fallbackLockKey, JSON.stringify({ instanceId, timestamp: Date.now() }));
+    }
+  }
+
+  function releaseControllerLock() {
+    if (releaseWebLock) releaseWebLock();
+    if (getFallbackLock()?.instanceId === instanceId) localStorage.removeItem(fallbackLockKey);
+  }
+
+  function block(reason, message) {
+    state.blockedReason = reason;
+    state.blockedMessage = message;
+    setPhase("blocked");
+    setStatus(message);
+    addLog(`已暂停：${message}`);
+  }
+
+  function hasTimedOut() {
+    return state.phaseSince > 0 && Date.now() - state.phaseSince >= ACTION_TIMEOUT_MS;
+  }
+
+  function dialogCandidates() {
+    const semantic = Array.from(document.querySelectorAll("[role='dialog'], [aria-modal='true']")).filter(isVisible);
+    if (semantic.length > 0) return semantic;
+    return Array.from(document.querySelectorAll("[class*='modal' i], [class*='dialog' i]")).filter(isVisible);
+  }
+
+  function isKnownEscapeDialog(text) {
+    const normalized = normalizeText(text);
+    const knownFirstStep =
+      /(结束|逃离).{0,12}迷宫|迷宫.{0,20}(将会|会|即将).{0,8}结束/i.test(normalized) ||
+      /escape\s+(?:the\s+)?labyrinth|end\s+(?:the\s+)?labyrinth|labyrinth.{0,30}(?:will\s+end|escape)/i.test(
+        normalized
+      );
+    const knownTorchStep =
+      /真的.{0,12}(确定|确认).{0,40}(火把|火炬).{0,40}(进度|继续)/i.test(normalized) ||
+      /really\s+sure.{0,80}torches?\s+remaining.{0,80}(?:more\s+progress|progress)/i.test(normalized);
+    const entrySupplyWarning =
+      /补给.{0,20}(不足|未满)|未带满|携带.{0,20}火把.{0,20}进入|entering\s+with.{0,50}torches?\s+instead|entering\s+without.{0,50}suppl/i.test(
+        normalized
+      );
+    return !entrySupplyWarning && (knownFirstStep || knownTorchStep);
+  }
+
+  function handleEscapeConfirmation() {
+    if (escapeConfirmationCount >= MAX_ESCAPE_CONFIRMATIONS) return false;
+
+    for (const dialog of dialogCandidates()) {
+      const dialogText = normalizeText(dialog.innerText || dialog.textContent);
+      if (!isKnownEscapeDialog(dialogText)) continue;
+      const confirmButton = findExactButton(TEXT.confirm, dialog, false);
+      if (!confirmButton) continue;
+
+      const signature = dialogText.slice(0, 400);
+      if (signature === lastEscapeDialogSignature) return false;
+      if (!safeClick(confirmButton, `确认结束迷宫（${escapeConfirmationCount + 1}）`)) return false;
+      lastEscapeDialogSignature = signature;
+      escapeConfirmationCount += 1;
+      return true;
+    }
+    return false;
+  }
+
+  function hasUnknownDialog() {
+    return dialogCandidates().some((dialog) => normalizeText(dialog.innerText || dialog.textContent).length > 0);
+  }
+
+  function navigateTo(texts, description) {
+    return safeClick(findExactButton(texts, document, false), description);
+  }
+
+  function beginEnding(controls) {
+    if (!safeClick(controls.endButton, "游戏内置自动化已停止，结束迷宫")) return;
+    lastEscapeDialogSignature = "";
+    escapeConfirmationCount = 0;
+    setPhase("ending");
+    setStatus("正在结束迷宫");
+  }
+
+  function handleRefill() {
+    if (state.phase === "verifyRefill") {
+      if (hasUnknownDialog()) {
+        block("refillDialog", "补充入场券出现确认或错误弹窗，请手动处理");
+        return;
+      }
+      if (Date.now() - state.phaseSince < 1500) return;
+      if (navigateTo(TEXT.labyrinthNav, "返回迷宫验证入场券")) {
+        setPhase("verifyRefillResult");
+      } else if (hasTimedOut()) {
+        block("labyrinthNavMissing", "补充后找不到迷宫入口");
+      }
+      return;
+    }
+
+    if (state.phase === "verifyRefillResult") {
+      const entries = readEntries();
+      if (entries?.current > 0) {
+        addLog(`补充成功（入场券 ${entries.current}/${entries.max}）`);
+        setPhase("idle");
+        return;
+      }
+      if (entries && entries.current <= 0) {
+        setPhase("openSettings");
+        setStatus("入场券仍为 0，返回设置检查冷却");
+        return;
+      }
+      if (hasTimedOut()) block("refillVerifyTimeout", "无法验证补充后的入场券数量");
+      else setStatus("正在验证补充结果");
+      return;
+    }
+
+    const refillButton = findExactButton(TEXT.refill);
+    if (refillButton) {
+      if (isDisabled(refillButton)) {
+        setPhase("waitingRefill");
+        setStatus("补充入场券处于 3 小时冷却，正在等待");
+        return;
+      }
+      if (safeClick(refillButton, "请求补充迷宫入场券")) {
+        setPhase("verifyRefill");
+        setStatus("已请求补充，等待验证结果");
+      }
+      return;
+    }
+
+    if (state.phase !== "openSettings") {
+      if (navigateTo(TEXT.settings, "打开设置")) {
+        setPhase("openSettings");
+        setStatus("正在打开设置");
+      } else {
+        block("settingsMissing", "找不到设置入口");
+      }
+      return;
+    }
+
+    if (hasTimedOut()) block("refillMissing", "找不到补充迷宫入场券按钮");
+  }
+
+  function waitForInactiveControl(phase, message) {
+    if (state.phase !== phase) {
+      setPhase(phase);
+      setStatus(message);
+      return;
+    }
+    if (hasTimedOut()) block(phase, message);
+    else setStatus(message);
+  }
+
+  function handleInactiveRun() {
+    if (state.ownedRun) {
+      state.ownedRun = false;
+      state.startIssued = false;
+      state.blockedReason = "";
+      state.blockedMessage = "";
+      setPhase("idle");
+      addLog("已确认迷宫结束");
+    }
+
+    if (state.phase === "enterPending") {
+      if (hasUnknownDialog()) {
+        block("entryDialog", "进入迷宫出现补给或未知确认框，请手动处理");
+      } else if (hasTimedOut()) {
+        block("enterTimeout", "进入迷宫超时");
+      } else {
+        setStatus("等待迷宫创建");
+      }
+      return;
+    }
+
+    if (["openSettings", "waitingRefill", "verifyRefill", "verifyRefillResult"].includes(state.phase)) {
+      handleRefill();
+      return;
+    }
+
+    const entries = readEntries();
+    if (!entries) {
+      if (!["openLabyrinth", "waitEntries"].includes(state.phase)) {
+        if (navigateTo(TEXT.labyrinthNav, "打开迷宫页面")) {
+          setPhase("openLabyrinth");
+          setStatus("正在打开迷宫页面");
+          return;
+        }
+      }
+      waitForInactiveControl("waitEntries", "无法识别入场券数据");
+      return;
+    }
+
+    if (entries.current <= 0) {
+      setStatus(`入场券 ${entries.current}/${entries.max}，准备补充`);
+      handleRefill();
+      return;
+    }
+
+    const enterButton = findExactButton(TEXT.enter, document, false);
+    if (!enterButton) {
+      waitForInactiveControl("waitEnter", `入场券 ${entries.current}/${entries.max}，找不到进入迷宫按钮`);
+      return;
+    }
+
+    if (safeClick(enterButton, `进入迷宫（入场券 ${entries.current}/${entries.max}）`)) {
+      state.startIssued = false;
+      setPhase("enterPending");
+      setStatus("已点击进入迷宫，等待创建");
+    }
+  }
+
+  function handleActiveRun(controls) {
+    if (!state.ownedRun) {
+      if (state.phase === "enterPending") {
+        state.ownedRun = true;
+        state.startIssued = false;
+        setPhase("awaitFirstStart");
+        addLog("已接管本次迷宫");
+      } else {
+        setStatus("检测到非脚本启动的迷宫，等待你手动结束");
+        return;
+      }
+    }
+
+    if (state.phase === "ending") {
+      handleEscapeConfirmation();
+      if (hasTimedOut()) block("endTimeout", "结束迷宫超时，请检查确认框");
+      else setStatus("正在确认并结束迷宫");
+      return;
+    }
+
+    if (controls.stopButton) {
+      if (state.phase !== "running") setPhase("running");
+      setStatus("游戏内置迷宫自动化正在运行");
+      return;
+    }
+
+    if (!state.startIssued) {
+      if (state.phase !== "awaitFirstStart") setPhase("awaitFirstStart");
+      const firstStartButton = controls.immediateStartButton || controls.startButton;
+      if (!firstStartButton || isDisabled(firstStartButton)) {
+        if (hasTimedOut()) block("startUnavailable", "新迷宫无法立即开始，请检查游戏内自动化路线");
+        else setStatus("等待立即开始按钮可用");
+        return;
+      }
+      if (safeClick(firstStartButton, "首次启动迷宫自动化")) {
+        state.startIssued = true;
+        setPhase("awaitRunning");
+        setStatus("已启动一次，等待运行或结束状态");
+      }
+      return;
+    }
+
+    if (controls.startButton && !controls.stopButton) {
+      if (state.phase === "awaitRunning" && Date.now() - state.phaseSince < START_SETTLE_MS) {
+        setStatus("已启动一次，等待界面状态稳定");
+        return;
+      }
+      beginEnding(controls);
+      return;
+    }
+
+    if (state.phase === "awaitRunning") {
+      if (hasTimedOut()) block("startTimeout", "启动后未识别到运行或结束状态");
+      else setStatus("等待迷宫自动化状态变化");
+      return;
+    }
+
+    setStatus("正在识别迷宫运行状态");
+  }
+
+  function evaluate() {
+    if (evaluating) {
+      evaluationQueued = true;
+      return;
+    }
+    evaluating = true;
+
+    try {
+      if (!state.enabled) {
+        setStatus("脚本已停用");
+        releaseControllerLock();
+        return;
+      }
+      if (!characterId) {
+        setStatus("当前网址缺少 characterId，脚本不会执行");
+        return;
+      }
+      if (state.phase === "blocked") {
+        setStatus(state.blockedMessage || "脚本已暂停");
+        return;
+      }
+      if (!ensureControllerLock()) {
+        if (!webLockPending) setStatus("另一个同角色标签页正在运行脚本");
+        return;
+      }
+
+      const controls = getActiveControls();
+      if (controls.active) handleActiveRun(controls);
+      else handleInactiveRun();
+    } catch (error) {
+      console.error(`[${SCRIPT_ID}]`, error);
+      block("runtimeError", `运行异常：${error?.message || String(error)}`);
+    } finally {
+      evaluating = false;
+      if (evaluationQueued) {
+        evaluationQueued = false;
+        scheduleEvaluate();
+      }
+    }
+  }
+
+  function scheduleEvaluate() {
+    clearTimeout(debounceTimer);
+    debounceTimer = window.setTimeout(evaluate, MUTATION_DEBOUNCE_MS);
+  }
+
+  function retryFromBlocked() {
+    if (state.phase !== "blocked") return;
+    const controls = getActiveControls();
+    const reason = state.blockedReason;
+    state.blockedReason = "";
+    state.blockedMessage = "";
+
+    if (controls.active && state.ownedRun) {
+      if (reason === "endTimeout") {
+        lastEscapeDialogSignature = "";
+        escapeConfirmationCount = 0;
+        setPhase("ending");
+      } else if (state.startIssued) {
+        setPhase("awaitRunning");
+      } else {
+        setPhase("awaitFirstStart");
+      }
+    } else if (controls.active && ["enterTimeout", "entryDialog"].includes(reason)) {
+      state.ownedRun = true;
+      setPhase("awaitFirstStart");
+    } else {
+      state.ownedRun = false;
+      state.startIssued = false;
+      setPhase("idle");
+    }
+    addLog("已手动重试");
+    scheduleEvaluate();
+  }
+
+  function toggleEnabled() {
+    state.enabled = !state.enabled;
+    state.blockedReason = "";
+    state.blockedMessage = "";
+    state.phaseSince = Date.now();
+    if (!state.enabled) {
+      state.ownedRun = false;
+      state.startIssued = false;
+      state.phase = "idle";
+      releaseControllerLock();
+      addLog("脚本已停用，当前迷宫不再托管");
+    } else {
+      state.phase = "idle";
+      addLog("脚本已启用");
+    }
+    saveState();
+    scheduleEvaluate();
+  }
+
+  function createUi() {
+    const host = document.createElement("div");
+    host.id = `${SCRIPT_ID}-host`;
+    document.body.appendChild(host);
+    const shadow = host.attachShadow({ mode: "open" });
+    shadow.innerHTML = `
+      <style>
+        :host { all: initial; }
+        .panel { position: fixed; top: 12px; right: 12px; z-index: 2147483647; width: 286px;
+          box-sizing: border-box; border: 1px solid rgba(255,255,255,.18); border-radius: 10px;
+          background: rgba(23,27,36,.96); box-shadow: 0 8px 28px rgba(0,0,0,.42); color: #eef2f8;
+          font: 13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; padding: 12px; }
+        .header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+        .title { font-size: 14px; font-weight: 700; }
+        button { border: 0; border-radius: 6px; color: #fff; cursor: pointer; font: inherit; padding: 6px 10px; }
+        .toggle.on { background: #c0392b; } .toggle.off { background: #27804b; }
+        .retry { margin-top: 8px; background: #b7791f; width: 100%; }
+        .status { margin-top: 10px; color: #d8e1ec; overflow-wrap: anywhere; }
+        .meta { margin-top: 4px; color: #8fa1b5; font-size: 11px; }
+        .logs { margin-top: 9px; border-top: 1px solid rgba(255,255,255,.12); padding-top: 7px; }
+        .log { color: #aebccd; font-size: 11px; overflow-wrap: anywhere; }
+        .empty { color: #738399; font-size: 11px; }
+      </style>
+      <section class="panel">
+        <div class="header"><div class="title">迷宫循环 · 测试服</div><button class="toggle" type="button"></button></div>
+        <div class="status"></div><div class="meta"></div>
+        <button class="retry" type="button">重试</button><div class="logs"></div>
+      </section>`;
+
+    ui = {
+      toggle: shadow.querySelector(".toggle"),
+      retry: shadow.querySelector(".retry"),
+      status: shadow.querySelector(".status"),
+      meta: shadow.querySelector(".meta"),
+      logs: shadow.querySelector(".logs"),
+    };
+    ui.toggle.addEventListener("click", toggleEnabled);
+    ui.retry.addEventListener("click", retryFromBlocked);
+    renderUi();
+  }
+
+  function renderUi() {
+    if (!ui) return;
+    ui.toggle.textContent = state.enabled ? "停用" : "启用";
+    ui.toggle.className = `toggle ${state.enabled ? "on" : "off"}`;
+    ui.status.textContent = statusText;
+    ui.meta.textContent = `角色 ${characterId || "未识别"} · ${state.phase}${state.ownedRun ? " · 已托管" : ""}`;
+    ui.retry.style.display = state.phase === "blocked" ? "block" : "none";
+    ui.logs.replaceChildren();
+    if (logItems.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "暂无操作记录";
+      ui.logs.appendChild(empty);
+      return;
+    }
+    for (const item of logItems) {
+      const row = document.createElement("div");
+      row.className = "log";
+      row.textContent = item;
+      ui.logs.appendChild(row);
+    }
+  }
+
+  GM_addValueChangeListener(stateKey, (_name, _oldValue, newValue, remote) => {
+    if (!remote || !newValue || typeof newValue !== "object") return;
+    state = { ...defaultState, ...newValue };
+    renderUi();
+    scheduleEvaluate();
+  });
+
+  createUi();
+  const observer = new MutationObserver(scheduleEvaluate);
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+    attributes: true,
+    attributeFilter: ["disabled", "aria-disabled"],
+  });
+
+  window.setInterval(evaluate, TICK_MS);
+  window.setInterval(refreshFallbackLock, FALLBACK_LOCK_HEARTBEAT_MS);
+  window.addEventListener("beforeunload", releaseControllerLock);
+  window.addEventListener("storage", (event) => {
+    if (event.key === fallbackLockKey) scheduleEvaluate();
+  });
+  scheduleEvaluate();
+})();
