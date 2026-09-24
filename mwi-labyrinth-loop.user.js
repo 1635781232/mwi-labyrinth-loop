@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Milky Way Idle 测试服迷宫循环
 // @namespace    https://github.com/1635781232/mwi-labyrinth-loop
-// @version      0.2.7
+// @version      0.2.8
 // @description  使用游戏内置自动化循环进入、开始和结束迷宫，并在测试服自动补充入场券。
 // @author       1635781232
 // @license      MIT
@@ -28,6 +28,7 @@
   const START_SETTLE_MS = 2000;
   const END_SETTLE_MS = 1500;
   const CLICK_GUARD_MS = 900;
+  const NAVIGATION_RETRY_MS = 3000;
   const FALLBACK_LOCK_TTL_MS = 15000;
   const FALLBACK_LOCK_HEARTBEAT_MS = 5000;
   const MAX_ESCAPE_CONFIRMATIONS = 2;
@@ -65,6 +66,7 @@
   let evaluationQueued = false;
   let debounceTimer = 0;
   let lastClickAt = 0;
+  let lastOwnedRunNavigationAt = 0;
   let lastEscapeDialogSignature = "";
   let escapeConfirmationCount = 0;
   let statusText = "脚本已停用";
@@ -324,8 +326,10 @@
 
   function findNavigation(section) {
     const icon = document.querySelector(`svg[aria-label="navigationBar.${section}"]`);
-    const link = icon?.closest("[class*='NavigationBar_navigationLink']");
-    return link && isVisible(link) ? link : null;
+    if (!icon) return null;
+    const semanticTarget = icon.closest("button, a, [role='button'], [class*='NavigationBar_navigationLink']");
+    const target = semanticTarget || icon.parentElement;
+    return target && isVisible(target) ? target : null;
   }
 
   function navigateTo(section, description) {
@@ -414,13 +418,17 @@
 
     if (state.ownedRun && !entries) {
       if (state.phase !== "returnToOwnedRun") {
+        lastOwnedRunNavigationAt = 0;
+        setPhase("returnToOwnedRun");
+      }
+      if (Date.now() - lastOwnedRunNavigationAt >= NAVIGATION_RETRY_MS) {
         if (navigateTo("labyrinth", "返回迷宫继续监控")) {
-          setPhase("returnToOwnedRun");
+          lastOwnedRunNavigationAt = Date.now();
           setStatus("正在返回迷宫继续监控");
-        } else {
-          block("ownedRunPageMissing", "找不到迷宫入口，无法继续监控当前迷宫");
+          return;
         }
-      } else if (hasTimedOut()) {
+      }
+      if (hasTimedOut()) {
         block("ownedRunPageMissing", "返回迷宫超时，无法继续监控当前迷宫");
       } else {
         setStatus("等待迷宫页面恢复");
@@ -643,6 +651,7 @@
       state.ownedRun = true;
       setPhase("awaitFirstStart");
     } else if (state.ownedRun && reason === "ownedRunPageMissing") {
+      lastOwnedRunNavigationAt = 0;
       setPhase("returnToOwnedRun");
     } else {
       state.ownedRun = false;

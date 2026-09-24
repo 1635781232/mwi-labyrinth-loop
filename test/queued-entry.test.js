@@ -88,6 +88,9 @@ function createHarness() {
   const immediateStart = new FakeElement("button", "立即开始");
   const labyrinthStop = new FakeElement("button", "停止");
   const end = new FakeElement("button", "结束迷宫");
+  const labyrinthNav = new FakeElement("div", "迷宫");
+  const labyrinthNavIcon = new FakeElement("svg");
+  labyrinthNavIcon.parentElement = labyrinthNav;
   let pageButtons = [enter, flee, unrelatedStop];
   immediateStart.addEventListener("click", () => {
     pageButtons = [unrelatedStop, labyrinthStop, end];
@@ -95,6 +98,10 @@ function createHarness() {
 
   const body = new FakeElement("body");
   body.innerText = "入场券: 5 / 5";
+  end.addEventListener("click", () => {
+    pageButtons = [];
+    body.innerText = "";
+  });
   const timers = new Map();
   const intervals = [];
   let nextTimerId = 1;
@@ -106,7 +113,8 @@ function createHarness() {
     createElement(tagName) {
       return new FakeElement(tagName);
     },
-    querySelector() {
+    querySelector(selector) {
+      if (selector === 'svg[aria-label="navigationBar.labyrinth"]') return labyrinthNavIcon;
       return null;
     },
     querySelectorAll(selector) {
@@ -178,6 +186,7 @@ function createHarness() {
     enter,
     flee,
     end,
+    labyrinthNav,
     immediateStart,
     advance(milliseconds) {
       now += milliseconds;
@@ -230,4 +239,12 @@ assert.equal(harness.flee.clickCount, 0, "unrelated actions must remain untouche
 assert.equal(harness.immediateStart.clickCount, 1, "the labyrinth start button must only be clicked once");
 assert.equal(harness.end.clickCount, 1, "the labyrinth must be ended after its automation stops");
 assert.equal(harness.readState().phase, "ending", "the labyrinth must end after its own automation stops");
+
+harness.advance(2_000);
+harness.tick();
+assert.equal(harness.labyrinthNav.clickCount, 1, "the sidebar icon container must reopen the labyrinth page");
+
+harness.advance(4_000);
+harness.tick();
+assert.equal(harness.labyrinthNav.clickCount, 2, "navigation must retry while the labyrinth page is still unavailable");
 console.log("queued entry ignores unrelated stop controls: ok");
