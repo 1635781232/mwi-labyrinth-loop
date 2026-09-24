@@ -34,7 +34,10 @@ class FakeElement {
 
   attachShadow() {
     const elements = new Map(
-      [".toggle", ".retry", ".status", ".meta", ".logs"].map((selector) => [selector, new FakeElement()])
+      [".toggle", ".retry", ".copy-log", ".status", ".meta", ".logs"].map((selector) => [
+        selector,
+        new FakeElement(),
+      ])
     );
     return {
       innerHTML: "",

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Milky Way Idle 测试服迷宫循环
 // @namespace    https://github.com/1635781232/mwi-labyrinth-loop
-// @version      0.2.9
+// @version      0.3.0
 // @description  使用游戏内置自动化循环进入、开始和结束迷宫，并在测试服自动补充入场券。
 // @author       1635781232
 // @license      MIT
@@ -15,12 +15,14 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_addValueChangeListener
+// @grant        GM_setClipboard
 // ==/UserScript==
 
 (function () {
   "use strict";
 
   const SCRIPT_ID = "mwi-labyrinth-loop";
+  const SCRIPT_VERSION = "0.3.0";
   const STATE_VERSION = 4;
   const TICK_MS = 2000;
   const MUTATION_DEBOUNCE_MS = 150;
@@ -49,6 +51,7 @@
   const stateKey = `${SCRIPT_ID}:state:${characterId || "missing"}`;
   const fallbackLockKey = `${SCRIPT_ID}:lock:${characterId || "missing"}`;
   const webLockName = `${SCRIPT_ID}:${location.origin}:${characterId || "missing"}`;
+  const debugLogKey = `${SCRIPT_ID}:debug:${characterId || "missing"}`;
   const instanceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
   const defaultState = {
@@ -73,6 +76,7 @@
   let escapeConfirmationCount = 0;
   let statusText = "脚本已停用";
   let logItems = [];
+  let debugLogItems = loadDebugLog();
   let ui = null;
 
   let webLockHeld = false;
@@ -91,23 +95,44 @@
     return { ...defaultState, ...saved };
   }
 
+  function loadDebugLog() {
+    const saved = GM_getValue(debugLogKey, []);
+    return Array.isArray(saved) ? saved.slice(-200) : [];
+  }
+
+  function recordDebug(event, details = {}) {
+    debugLogItems.push({
+      time: new Date().toISOString(),
+      event,
+      phase: state?.phase || "initializing",
+      ownedRun: state?.ownedRun === true,
+      startIssued: state?.startIssued === true,
+      ...details,
+    });
+    debugLogItems = debugLogItems.slice(-200);
+    GM_setValue(debugLogKey, debugLogItems);
+  }
+
   function saveState() {
     GM_setValue(stateKey, { ...state, version: STATE_VERSION });
     renderUi();
   }
 
   function setPhase(phase, extra = {}) {
+    const previousPhase = state.phase;
     if (state.phase !== phase) {
       state.phase = phase;
       state.phaseSince = Date.now();
     }
     Object.assign(state, extra);
+    if (previousPhase !== phase) recordDebug("phase", { from: previousPhase, to: phase });
     saveState();
   }
 
   function setStatus(text) {
     if (statusText === text) return;
     statusText = text;
+    recordDebug("status", { message: text });
     renderUi();
   }
 
@@ -115,6 +140,7 @@
     const time = new Date().toLocaleTimeString([], { hour12: false });
     logItems.unshift(`${time}  ${text}`);
     logItems = logItems.slice(0, 5);
+    recordDebug("action", { message: text });
     renderUi();
   }
 
@@ -170,6 +196,54 @@
       // labyrinth Start button is authoritative: its automation is not running.
       stopButton: startButton ? null : findExactButton(TEXT.stop),
     };
+  }
+
+  function buildDebugReport() {
+    const controls = getActiveControls();
+    const dialogs = Array.from(new Set([...dialogCandidates(), ...escapeDialogCandidates()])).map((dialog) =>
+      normalizeText(dialog.innerText || dialog.textContent).slice(0, 600)
+    );
+    const payload = {
+      script: { id: SCRIPT_ID, version: SCRIPT_VERSION, stateVersion: STATE_VERSION },
+      capturedAt: new Date().toISOString(),
+      url: location.href,
+      characterId,
+      state: { ...state },
+      status: statusText,
+      entries: readEntries(),
+      controls: {
+        active: controls.active,
+        hasEnd: Boolean(controls.endButton),
+        hasImmediateStart: Boolean(controls.immediateStartButton),
+        hasStart: Boolean(controls.startButton),
+        hasStop: Boolean(controls.stopButton),
+      },
+      dialogs,
+      recentPanelLogs: [...logItems],
+      events: [...debugLogItems],
+    };
+    return `Milky Way Idle 迷宫循环详细日志\n${JSON.stringify(payload, null, 2)}`;
+  }
+
+  async function copyDetailedLog() {
+    const report = buildDebugReport();
+    try {
+      if (typeof GM_setClipboard === "function") {
+        GM_setClipboard(report, "text");
+      } else if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(report);
+      } else {
+        throw new Error("当前环境不支持剪贴板写入");
+      }
+      addLog("已复制详细日志");
+      ui.copyLog.textContent = "已复制";
+    } catch (error) {
+      recordDebug("copyLogError", { message: error?.message || String(error) });
+      ui.copyLog.textContent = "复制失败";
+    }
+    window.setTimeout(() => {
+      if (ui?.copyLog) ui.copyLog.textContent = "复制详细日志";
+    }, 1600);
   }
 
   function readEntries() {
@@ -740,7 +814,9 @@
         .title { font-size: 14px; font-weight: 700; }
         button { border: 0; border-radius: 6px; color: #fff; cursor: pointer; font: inherit; padding: 6px 10px; }
         .toggle.on { background: #c0392b; } .toggle.off { background: #27804b; }
-        .retry { margin-top: 8px; background: #b7791f; width: 100%; }
+        .retry, .copy-log { margin-top: 8px; width: 100%; }
+        .retry { background: #b7791f; }
+        .copy-log { background: #334e68; }
         .status { margin-top: 10px; color: #d8e1ec; overflow-wrap: anywhere; }
         .meta { margin-top: 4px; color: #8fa1b5; font-size: 11px; }
         .logs { margin-top: 9px; border-top: 1px solid rgba(255,255,255,.12); padding-top: 7px; }
@@ -750,18 +826,21 @@
       <section class="panel">
         <div class="header"><div class="title">迷宫循环 · 测试服</div><button class="toggle" type="button"></button></div>
         <div class="status"></div><div class="meta"></div>
-        <button class="retry" type="button">重试</button><div class="logs"></div>
+        <button class="retry" type="button">重试</button>
+        <button class="copy-log" type="button">复制详细日志</button><div class="logs"></div>
       </section>`;
 
     ui = {
       toggle: shadow.querySelector(".toggle"),
       retry: shadow.querySelector(".retry"),
+      copyLog: shadow.querySelector(".copy-log"),
       status: shadow.querySelector(".status"),
       meta: shadow.querySelector(".meta"),
       logs: shadow.querySelector(".logs"),
     };
     ui.toggle.addEventListener("click", toggleEnabled);
     ui.retry.addEventListener("click", retryFromBlocked);
+    ui.copyLog.addEventListener("click", copyDetailedLog);
     renderUi();
   }
 
@@ -805,6 +884,7 @@
   });
 
   createUi();
+  recordDebug("scriptLoaded", { version: SCRIPT_VERSION, enabled: state.enabled });
   const observer = new MutationObserver(scheduleEvaluate);
   observer.observe(document.body, {
     childList: true,

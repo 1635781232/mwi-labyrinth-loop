@@ -34,8 +34,12 @@ class FakeElement {
 
   attachShadow() {
     const elements = new Map(
-      [".toggle", ".retry", ".status", ".meta", ".logs"].map((selector) => [selector, new FakeElement()])
+      [".toggle", ".retry", ".copy-log", ".status", ".meta", ".logs"].map((selector) => [
+        selector,
+        new FakeElement(),
+      ])
     );
+    this.shadowElements = elements;
     return {
       innerHTML: "",
       querySelector(selector) {
@@ -117,6 +121,7 @@ function createHarness() {
   });
   const timers = new Map();
   const intervals = [];
+  let clipboardText = "";
   let nextTimerId = 1;
   const stateKey = "mwi-labyrinth-loop:state:27538";
   const storage = new Map([[stateKey, JSON.stringify({ version: 3, enabled: true, phase: "idle" })]]);
@@ -194,6 +199,9 @@ function createHarness() {
       storage.set(key, JSON.stringify(value));
     },
     GM_addValueChangeListener() {},
+    GM_setClipboard(value) {
+      clipboardText = String(value);
+    },
   });
 
   return {
@@ -225,6 +233,11 @@ function createHarness() {
     },
     readState() {
       return JSON.parse(storage.get(stateKey));
+    },
+    copyDetailedLog() {
+      const host = body.children.find((element) => element.id === "mwi-labyrinth-loop-host");
+      host.shadowElements.get(".copy-log").click();
+      return clipboardText;
     },
   };
 }
@@ -271,4 +284,8 @@ assert.equal(harness.labyrinthNav.clickCount, 1, "the sidebar icon container mus
 harness.advance(4_000);
 harness.tick();
 assert.equal(harness.labyrinthNav.clickCount, 2, "navigation must retry while the labyrinth page is still unavailable");
+const copiedLog = harness.copyDetailedLog();
+assert.match(copiedLog, /Milky Way Idle 迷宫循环详细日志/);
+assert.match(copiedLog, /"version": "0\.3\.0"/);
+assert.match(copiedLog, /"events": \[/);
 console.log("queued entry ignores unrelated stop controls: ok");
