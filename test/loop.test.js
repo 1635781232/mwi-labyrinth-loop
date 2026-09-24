@@ -38,7 +38,8 @@ class Element {
   }
 }
 
-function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFailures = 0, captureSocket = true } = {}) {
+function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFailures = 0,
+  captureSocket = true, ticketsInitiallyVisible = true, refillDisabled = false } = {}) {
   let now = 100000;
   class Clock extends Date {
     constructor(...args) { super(...(args.length ? args : [now])); }
@@ -50,6 +51,7 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFail
   const stop = new Element("button", "停止");
   const end = new Element("button", "结束迷宫");
   const refill = new Element("button", "补充入场券");
+  refill.disabled = refillDisabled;
   const navLabyrinth = new Element("div", "迷宫");
   const navSettings = new Element("div", "设置");
   const iconLabyrinth = new Element("svg");
@@ -74,6 +76,7 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFail
   let settingsOpen = false;
   const updateTickets = () => { body.innerText = `入场券: ${tickets} / 5`; };
   updateTickets();
+  if (!ticketsInitiallyVisible) body.innerText = "";
   end.closest = () => panel;
   panel.querySelectorAll = (selector) =>
     selector.includes("settingLabel") ? [setting] :
@@ -103,7 +106,11 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFail
     pageButtons = [stop, end];
   });
   navSettings.addEventListener("click", () => { settingsOpen = true; pageButtons = [refill]; });
-  navLabyrinth.addEventListener("click", () => { settingsOpen = false; pageButtons = [enter]; });
+  navLabyrinth.addEventListener("click", () => {
+    settingsOpen = false;
+    pageButtons = [enter];
+    updateTickets();
+  });
   refill.addEventListener("click", () => { tickets = 5; updateTickets(); });
   const sent = [];
   class FakeSocket {
@@ -204,6 +211,17 @@ empty.tick();
 empty.tick();
 empty.tick();
 assert.equal(empty.sent[1].type, "start_labyrinth", "enter after verifying replenished tickets");
+
+const delayedEmpty = harness({ tickets: 0, ticketsInitiallyVisible: false, refillDisabled: true });
+delayedEmpty.tick(22000);
+assert.equal(delayedEmpty.navSettings.clickCount, 0, "open labyrinth to read the entry count first");
+delayedEmpty.tick(500);
+assert.notEqual(delayedEmpty.state().phase, "paused", "old idle time must not expire the refill stage");
+delayedEmpty.tick(1500);
+assert.equal(delayedEmpty.navSettings.clickCount, 1, "navigate to settings after the two-second interval");
+delayedEmpty.tick();
+assert.equal(delayedEmpty.state().phase, "refill", "wait while the refill button is cooling down");
+assert.equal(delayedEmpty.sent.length, 0, "do not request refill while the button is disabled");
 
 const missedClick = harness({ entryFailures: 1 });
 missedClick.tick();

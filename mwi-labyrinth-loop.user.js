@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Milky Way Idle 测试服迷宫循环
 // @namespace    https://github.com/1635781232/mwi-labyrinth-loop
-// @version      0.5.0
+// @version      0.5.1
 // @description  手动启用后，使用游戏内置自动化循环进入、开始、结束迷宫，并在测试服补充入场券。
 // @author       1635781232
 // @license      MIT
@@ -351,7 +351,10 @@
       if (unknownDialog()) return pause("页面出现未知弹窗，请手动处理");
       const tickets = entries();
       if (!tickets) { navigate("labyrinth"); status = "打开迷宫主界面"; return; }
-      if (tickets.current === 0) return refill();
+      if (tickets.current === 0) {
+        phase("refill", "入场券为 0，准备打开设置补票");
+        return refill();
+      }
       const enter = button(["进入迷宫", "Enter Labyrinth"]);
       if (enter && sendGame("start_labyrinth", { startLabyrinthData: {} }, "进入迷宫")) {
         state.entryTickets = tickets.current;
@@ -442,7 +445,7 @@
     panel.toggle.addEventListener("click", toggle);
     panel.retry.addEventListener("click", retry);
     panel.copy.addEventListener("click", () => {
-      GM_setClipboard(JSON.stringify({ version: "0.5.0", characterId, state, status, logs }, null, 2));
+      GM_setClipboard(JSON.stringify({ version: "0.5.1", characterId, state, status, logs }, null, 2));
       status = "详细日志已复制";
       render();
     });
@@ -450,7 +453,7 @@
   }
 
   createPanel();
-  note("loaded", { version: "0.5.0" });
+  note("loaded", { version: "0.5.1" });
   new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true, characterData: true });
   setInterval(tick, 2000);
   window.addEventListener("beforeunload", unlock);
