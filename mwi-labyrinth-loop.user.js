@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Milky Way Idle 测试服迷宫循环
 // @namespace    https://github.com/1635781232/mwi-labyrinth-loop
-// @version      0.2.2
+// @version      0.2.3
 // @description  使用游戏内置自动化循环进入、开始和结束迷宫，并在测试服自动补充入场券。
 // @author       1635781232
 // @license      MIT
@@ -263,14 +263,14 @@
 
   function dialogCandidates() {
     const semantic = Array.from(document.querySelectorAll("[role='dialog'], [aria-modal='true']")).filter(isVisible);
-    if (semantic.length > 0) return semantic;
-    return Array.from(document.querySelectorAll("[class*='modal' i], [class*='dialog' i]")).filter(isVisible);
+    const conventional = Array.from(document.querySelectorAll("[class*='modal' i], [class*='dialog' i]")).filter(isVisible);
+    return Array.from(new Set([...semantic, ...conventional]));
   }
 
   function isKnownEscapeDialog(text) {
     const normalized = normalizeText(text);
     const knownFirstStep =
-      /(结束|逃离).{0,12}迷宫|迷宫.{0,20}(将会|会|即将).{0,8}结束/i.test(normalized) ||
+      /(结束|逃离|逃出).{0,12}迷宫|迷宫.{0,20}(将会|会|即将).{0,8}结束/i.test(normalized) ||
       /escape\s+(?:the\s+)?labyrinth|end\s+(?:the\s+)?labyrinth|labyrinth.{0,30}(?:will\s+end|escape)/i.test(
         normalized
       );
@@ -535,6 +535,12 @@
         return;
       }
       if (state.phase === "blocked") {
+        // A confirmation dialog can appear just after the timeout boundary.
+        // Resume only an owned end-confirmation flow so it can handle it.
+        if (state.ownedRun && state.blockedReason === "endTimeout" && getActiveControls().active) {
+          retryFromBlocked();
+          return;
+        }
         setStatus(state.blockedMessage || "脚本已暂停");
         return;
       }
@@ -656,12 +662,14 @@
   function renderUi() {
     if (!ui) return;
     // Expose status for diagnostics without using it as a control input.
-    uiHost.dataset.enabled = String(state.enabled);
-    uiHost.dataset.phase = state.phase;
-    uiHost.dataset.ownedRun = String(state.ownedRun);
-    uiHost.dataset.startIssued = String(state.startIssued);
-    uiHost.dataset.status = statusText;
-    uiHost.dataset.blockedReason = state.blockedReason || "";
+    if (uiHost) {
+      uiHost.dataset.enabled = String(state.enabled);
+      uiHost.dataset.phase = state.phase;
+      uiHost.dataset.ownedRun = String(state.ownedRun);
+      uiHost.dataset.startIssued = String(state.startIssued);
+      uiHost.dataset.status = statusText;
+      uiHost.dataset.blockedReason = state.blockedReason || "";
+    }
     ui.toggle.textContent = state.enabled ? "停用" : "启用";
     ui.toggle.className = `toggle ${state.enabled ? "on" : "off"}`;
     ui.status.textContent = statusText;
