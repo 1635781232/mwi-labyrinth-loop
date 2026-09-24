@@ -17,6 +17,8 @@ class FakeElement {
     this.listeners = new Map();
     this.attributes = new Map();
     this.clickCount = 0;
+    this.isConnected = true;
+    this.rect = { left: 10, top: 10, right: 110, bottom: 40, width: 100, height: 30 };
   }
 
   addEventListener(type, listener) {
@@ -54,7 +56,7 @@ class FakeElement {
   }
 
   getBoundingClientRect() {
-    return { width: 100, height: 30 };
+    return this.rect;
   }
 
   hasAttribute(name) {
@@ -105,12 +107,15 @@ function createHarness() {
   torchDialog.children = [cancelTorchExit, confirmTorchExit];
   cancelTorchExit.parentElement = torchDialog;
   confirmTorchExit.parentElement = torchDialog;
+  const staleConfirmTorchExit = new FakeElement("button", "确定");
+  const staleTorchDialog = new FakeElement("div", "你还有 388 个火把，确定要离开迷宫吗？");
+  staleTorchDialog.children = [staleConfirmTorchExit];
+  staleConfirmTorchExit.parentElement = staleTorchDialog;
   const labyrinthNav = new FakeElement("div", "迷宫");
   const labyrinthNavIcon = new FakeElement("svg");
   labyrinthNavIcon.parentElement = labyrinthNav;
   let pageButtons = [enter, flee, unrelatedStop];
   let exitDialogStage = 0;
-  let torchAcknowledged = false;
   immediateStart.addEventListener("click", () => {
     pageButtons = [unrelatedStop, labyrinthStop, end];
   });
@@ -118,11 +123,6 @@ function createHarness() {
   const body = new FakeElement("body");
   body.innerText = "入场券: 5 / 5";
   end.addEventListener("click", () => {
-    if (torchAcknowledged) {
-      pageButtons = [];
-      body.innerText = "";
-      return;
-    }
     exitDialogStage = 1;
   });
   confirmFirstExit.addEventListener("click", () => {
@@ -130,7 +130,10 @@ function createHarness() {
   });
   confirmTorchExit.addEventListener("click", () => {
     exitDialogStage = 0;
-    torchAcknowledged = true;
+    torchDialog.isConnected = false;
+    confirmTorchExit.isConnected = false;
+    pageButtons = [];
+    body.innerText = "";
   });
   const timers = new Map();
   const intervals = [];
@@ -152,11 +155,12 @@ function createHarness() {
       if (selector === "button, a, [role='button']") {
         if (exitDialogStage === 1) return [...pageButtons, cancelFirstExit, confirmFirstExit];
         if (exitDialogStage === 2) {
-          // React may leave the first dialog mounted while displaying the torch dialog.
+          // React may retain stale, fully-sized dialog nodes under the current modal.
           return [
             ...pageButtons,
             cancelFirstExit,
             confirmFirstExit,
+            staleConfirmTorchExit,
             cancelTorchExit,
             confirmTorchExit,
           ];
@@ -164,6 +168,11 @@ function createHarness() {
         return pageButtons;
       }
       return [];
+    },
+    elementFromPoint() {
+      if (exitDialogStage === 1) return confirmFirstExit;
+      if (exitDialogStage === 2) return confirmTorchExit;
+      return null;
     },
   };
 
@@ -235,6 +244,7 @@ function createHarness() {
     end,
     confirmFirstExit,
     confirmTorchExit,
+    staleConfirmTorchExit,
     labyrinthNav,
     immediateStart,
     advance(milliseconds) {
@@ -301,11 +311,12 @@ assert.equal(harness.confirmFirstExit.clickCount, 1, "the first exit confirmatio
 harness.advance(1_000);
 harness.tick();
 assert.equal(harness.confirmFirstExit.clickCount, 1, "the stale first confirmation must not be clicked again");
+assert.equal(harness.staleConfirmTorchExit.clickCount, 0, "an occluded stale torch confirmation must not be clicked");
 assert.equal(harness.confirmTorchExit.clickCount, 1, "the newer torch confirmation must be clicked");
 
 harness.advance(2_000);
 harness.tick();
-assert.equal(harness.end.clickCount, 2, "ending must be submitted again after the torch warning is acknowledged");
+assert.equal(harness.end.clickCount, 1, "ending must not be resubmitted after the torch warning is acknowledged");
 
 harness.advance(2_000);
 harness.tick();
@@ -316,6 +327,8 @@ harness.tick();
 assert.equal(harness.labyrinthNav.clickCount, 2, "navigation must retry while the labyrinth page is still unavailable");
 const copiedLog = harness.copyDetailedLog();
 assert.match(copiedLog, /Milky Way Idle 迷宫循环详细日志/);
-assert.match(copiedLog, /"version": "0\.3\.2"/);
+assert.match(copiedLog, /"version": "0\.3\.3"/);
+assert.match(copiedLog, /"hitTest":/);
+assert.match(copiedLog, /"dialogStillOpen": false/);
 assert.match(copiedLog, /"events": \[/);
 console.log("queued entry ignores unrelated stop controls: ok");

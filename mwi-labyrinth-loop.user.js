@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Milky Way Idle 测试服迷宫循环
 // @namespace    https://github.com/1635781232/mwi-labyrinth-loop
-// @version      0.3.2
+// @version      0.3.3
 // @description  使用游戏内置自动化循环进入、开始和结束迷宫，并在测试服自动补充入场券。
 // @author       1635781232
 // @license      MIT
@@ -22,7 +22,7 @@
   "use strict";
 
   const SCRIPT_ID = "mwi-labyrinth-loop";
-  const SCRIPT_VERSION = "0.3.2";
+  const SCRIPT_VERSION = "0.3.3";
   const STATE_VERSION = 4;
   const TICK_MS = 2000;
   const MUTATION_DEBOUNCE_MS = 150;
@@ -35,7 +35,6 @@
   const FALLBACK_LOCK_HEARTBEAT_MS = 5000;
   const MAX_ESCAPE_CONFIRMATION_CLICKS = 4;
   const ESCAPE_CONFIRMATION_RETRY_MS = 2000;
-  const POST_TORCH_END_RETRY_MS = 1200;
 
   const TEXT = {
     enter: ["进入迷宫", "Enter Labyrinth"],
@@ -75,8 +74,7 @@
   let lastEscapeDialogSignature = "";
   let lastEscapeDialogClickAt = 0;
   let escapeConfirmationCount = 0;
-  let lastTorchConfirmationAt = 0;
-  let postTorchEndRetryIssued = false;
+  let pendingEscapeActivation = null;
   let statusText = "脚本已停用";
   let logItems = [];
   let debugLogItems = loadDebugLog();
@@ -163,6 +161,37 @@
     if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) return false;
     const rect = element.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;
+  }
+
+  function rectSnapshot(element) {
+    const rect = element.getBoundingClientRect();
+    return {
+      left: Math.round(rect.left),
+      top: Math.round(rect.top),
+      right: Math.round(rect.right),
+      bottom: Math.round(rect.bottom),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+    };
+  }
+
+  function hitTest(element) {
+    if (!element?.isConnected || typeof document.elementFromPoint !== "function") {
+      return { accepted: false, hit: null, rect: element ? rectSnapshot(element) : null };
+    }
+    const rect = element.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+    const hit = document.elementFromPoint(x, y);
+    const accepted = Boolean(hit && (hit === element || element.contains?.(hit)));
+    return { accepted, hit, rect: rectSnapshot(element) };
+  }
+
+  function elementIdentity(element) {
+    if (!element) return "none";
+    const id = element.id ? `#${element.id}` : "";
+    const classes = typeof element.className === "string" ? element.className.trim().split(/\s+/).slice(0, 2) : [];
+    return `${String(element.tagName || "element").toLowerCase()}${id}${classes.length ? `.${classes.join(".")}` : ""}`;
   }
 
   function isDisabled(element) {
@@ -413,21 +442,76 @@
     return Array.from(new Set(candidates));
   }
 
+  function nearestKnownEscapeDialog(button) {
+    let ancestor = button.parentElement;
+    for (let depth = 0; ancestor && ancestor !== document.body && depth < 10; depth += 1) {
+      if (isVisible(ancestor) && isKnownEscapeDialog(ancestor.innerText || ancestor.textContent)) return ancestor;
+      ancestor = ancestor.parentElement;
+    }
+    return null;
+  }
+
+  function maximumZIndex(element) {
+    let maximum = 0;
+    for (let current = element; current && current !== document.body; current = current.parentElement) {
+      const parsed = Number.parseInt(getComputedStyle(current).zIndex, 10);
+      if (Number.isFinite(parsed)) maximum = Math.max(maximum, parsed);
+    }
+    return maximum;
+  }
+
+  function auditPendingEscapeActivation() {
+    if (!pendingEscapeActivation || Date.now() - pendingEscapeActivation.clickedAt < 250) return;
+    const { button, dialog, signature } = pendingEscapeActivation;
+    const currentHit = button?.isConnected && isVisible(button) ? hitTest(button) : { accepted: false, hit: null };
+    const dialogStillOpen = Boolean(
+      dialog?.isConnected && isVisible(dialog) && normalizeText(dialog.innerText || dialog.textContent).slice(0, 400) === signature
+    );
+    recordDebug("escapeConfirmationOutcome", {
+      dialogStillOpen,
+      buttonConnected: Boolean(button?.isConnected),
+      buttonStillHitTestable: currentHit.accepted,
+      hitElement: elementIdentity(currentHit.hit),
+    });
+    pendingEscapeActivation = null;
+  }
+
   function handleEscapeConfirmation() {
+    auditPendingEscapeActivation();
     if (escapeConfirmationCount >= MAX_ESCAPE_CONFIRMATION_CLICKS) return false;
 
     const matches = [];
-    for (const dialog of escapeDialogCandidates()) {
+    const wanted = new Set(TEXT.confirm.map(normalizeText));
+    const buttons = clickableElements();
+    for (let domOrder = 0; domOrder < buttons.length; domOrder += 1) {
+      const confirmButton = buttons[domOrder];
+      if (
+        !isVisible(confirmButton) ||
+        isDisabled(confirmButton) ||
+        !wanted.has(normalizeText(confirmButton.innerText || confirmButton.textContent))
+      ) continue;
+      const dialog = nearestKnownEscapeDialog(confirmButton);
+      if (!dialog) continue;
       const dialogText = normalizeText(dialog.innerText || dialog.textContent);
-      if (!isKnownEscapeDialog(dialogText)) continue;
-      const confirmButton = findExactButton(TEXT.confirm, dialog, false);
-      if (!confirmButton) continue;
-      matches.push({ dialogText, confirmButton, signature: dialogText.slice(0, 400) });
+      const hit = hitTest(confirmButton);
+      matches.push({
+        dialog,
+        dialogText,
+        confirmButton,
+        signature: dialogText.slice(0, 400),
+        hit,
+        zIndex: maximumZIndex(confirmButton),
+        domOrder,
+      });
     }
 
+    const actionable = matches
+      .filter((candidate) => candidate.hit.accepted)
+      .sort((left, right) => right.zIndex - left.zIndex || right.domOrder - left.domOrder);
+
     const match =
-      matches.find((candidate) => candidate.signature !== lastEscapeDialogSignature) ||
-      matches.find(
+      actionable.find((candidate) => candidate.signature !== lastEscapeDialogSignature) ||
+      actionable.find(
         (candidate) =>
           candidate.signature === lastEscapeDialogSignature &&
           Date.now() - lastEscapeDialogClickAt >= ESCAPE_CONFIRMATION_RETRY_MS
@@ -435,6 +519,18 @@
     if (!match) return false;
 
     const buttonText = normalizeText(match.confirmButton.innerText || match.confirmButton.textContent);
+    recordDebug("escapeConfirmationSelection", {
+      candidateCount: matches.length,
+      actionableCount: actionable.length,
+      chosenButton: buttonText,
+      chosenDialog: match.dialogText.slice(0, 400),
+      rect: match.hit.rect,
+      isConnected: Boolean(match.confirmButton.isConnected),
+      hitTest: match.hit.accepted,
+      hitElement: elementIdentity(match.hit.hit),
+      zIndex: match.zIndex,
+      domOrder: match.domOrder,
+    });
     const description = `确认结束迷宫（${escapeConfirmationCount + 1}）：按钮“${buttonText}” · ${match.dialogText.slice(
       0,
       160
@@ -443,10 +539,12 @@
     lastEscapeDialogSignature = match.signature;
     lastEscapeDialogClickAt = Date.now();
     escapeConfirmationCount += 1;
-    if (isKnownTorchEscapeDialog(match.dialogText)) {
-      lastTorchConfirmationAt = Date.now();
-      postTorchEndRetryIssued = false;
-    }
+    pendingEscapeActivation = {
+      button: match.confirmButton,
+      dialog: match.dialog,
+      signature: match.signature,
+      clickedAt: Date.now(),
+    };
     return true;
   }
 
@@ -478,8 +576,7 @@
     lastEscapeDialogSignature = "";
     lastEscapeDialogClickAt = 0;
     escapeConfirmationCount = 0;
-    lastTorchConfirmationAt = 0;
-    postTorchEndRetryIssued = false;
+    pendingEscapeActivation = null;
     setPhase("ending");
     setStatus("正在结束迷宫");
   }
@@ -667,20 +764,6 @@
         setStatus("正在确认并结束迷宫");
         return;
       }
-      const knownDialogStillOpen = escapeDialogCandidates().some((dialog) =>
-        isKnownEscapeDialog(dialog.innerText || dialog.textContent)
-      );
-      if (
-        lastTorchConfirmationAt > 0 &&
-        !postTorchEndRetryIssued &&
-        !knownDialogStillOpen &&
-        Date.now() - lastTorchConfirmationAt >= POST_TORCH_END_RETRY_MS &&
-        safeClick(controls.endButton, "火炬确认后再次提交结束迷宫")
-      ) {
-        postTorchEndRetryIssued = true;
-        setStatus("已确认火炬提示，正在再次提交结束");
-        return;
-      }
       if (!confirmed && hasUnknownEscapeDialog()) {
         block("unknownDialog", "结束迷宫出现未知弹窗，请手动处理");
         return;
@@ -749,6 +832,7 @@
         setStatus("当前网址缺少 characterId，脚本不会执行");
         return;
       }
+      auditPendingEscapeActivation();
       if (state.phase === "blocked") {
         // A confirmation dialog can appear just after the timeout boundary.
         // Resume only an owned end-confirmation flow so it can handle it.
