@@ -116,6 +116,7 @@ function createHarness() {
   labyrinthNavIcon.parentElement = labyrinthNav;
   let pageButtons = [enter, flee, unrelatedStop];
   let exitDialogStage = 0;
+  let escapePending = false;
   immediateStart.addEventListener("click", () => {
     pageButtons = [unrelatedStop, labyrinthStop, end];
   });
@@ -132,8 +133,7 @@ function createHarness() {
     exitDialogStage = 0;
     torchDialog.isConnected = false;
     confirmTorchExit.isConnected = false;
-    pageButtons = [];
-    body.innerText = "";
+    escapePending = true;
   });
   const timers = new Map();
   const intervals = [];
@@ -266,6 +266,11 @@ function createHarness() {
     finishLabyrinthAutomation() {
       pageButtons = [unrelatedStop, immediateStart, end];
     },
+    completeEscape() {
+      assert.equal(escapePending, true, "the server escape request must be pending");
+      pageButtons = [];
+      body.innerText = "";
+    },
     readState() {
       return JSON.parse(storage.get(stateKey));
     },
@@ -317,6 +322,14 @@ assert.equal(harness.confirmTorchExit.clickCount, 1, "the newer torch confirmati
 harness.advance(2_000);
 harness.tick();
 assert.equal(harness.end.clickCount, 1, "ending must not be resubmitted after the torch warning is acknowledged");
+assert.equal(harness.readState().phase, "ending", "the script must wait for the server to acknowledge escape");
+
+harness.advance(28_000);
+harness.tick();
+assert.equal(harness.readState().phase, "ending", "a slow server response must not time out after 20 seconds");
+assert.equal(harness.end.clickCount, 1, "a slow response must not resubmit ending");
+
+harness.completeEscape();
 
 harness.advance(2_000);
 harness.tick();
@@ -327,7 +340,7 @@ harness.tick();
 assert.equal(harness.labyrinthNav.clickCount, 2, "navigation must retry while the labyrinth page is still unavailable");
 const copiedLog = harness.copyDetailedLog();
 assert.match(copiedLog, /Milky Way Idle 迷宫循环详细日志/);
-assert.match(copiedLog, /"version": "0\.3\.3"/);
+assert.match(copiedLog, /"version": "0\.3\.4"/);
 assert.match(copiedLog, /"hitTest":/);
 assert.match(copiedLog, /"dialogStillOpen": false/);
 assert.match(copiedLog, /"events": \[/);

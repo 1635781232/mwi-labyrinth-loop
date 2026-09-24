@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Milky Way Idle 测试服迷宫循环
 // @namespace    https://github.com/1635781232/mwi-labyrinth-loop
-// @version      0.3.3
+// @version      0.3.4
 // @description  使用游戏内置自动化循环进入、开始和结束迷宫，并在测试服自动补充入场券。
 // @author       1635781232
 // @license      MIT
@@ -22,7 +22,7 @@
   "use strict";
 
   const SCRIPT_ID = "mwi-labyrinth-loop";
-  const SCRIPT_VERSION = "0.3.3";
+  const SCRIPT_VERSION = "0.3.4";
   const STATE_VERSION = 4;
   const TICK_MS = 2000;
   const MUTATION_DEBOUNCE_MS = 150;
@@ -35,6 +35,7 @@
   const FALLBACK_LOCK_HEARTBEAT_MS = 5000;
   const MAX_ESCAPE_CONFIRMATION_CLICKS = 4;
   const ESCAPE_CONFIRMATION_RETRY_MS = 2000;
+  const ESCAPE_SERVER_TIMEOUT_MS = 60000;
 
   const TEXT = {
     enter: ["进入迷宫", "Enter Labyrinth"],
@@ -74,6 +75,7 @@
   let lastEscapeDialogSignature = "";
   let lastEscapeDialogClickAt = 0;
   let escapeConfirmationCount = 0;
+  let lastTorchConfirmationAt = 0;
   let pendingEscapeActivation = null;
   let statusText = "脚本已停用";
   let logItems = [];
@@ -545,6 +547,10 @@
       signature: match.signature,
       clickedAt: Date.now(),
     };
+    if (isKnownTorchEscapeDialog(match.dialogText)) {
+      lastTorchConfirmationAt = Date.now();
+      recordDebug("escapeRequestPending", { timeoutMs: ESCAPE_SERVER_TIMEOUT_MS });
+    }
     return true;
   }
 
@@ -576,6 +582,7 @@
     lastEscapeDialogSignature = "";
     lastEscapeDialogClickAt = 0;
     escapeConfirmationCount = 0;
+    lastTorchConfirmationAt = 0;
     pendingEscapeActivation = null;
     setPhase("ending");
     setStatus("正在结束迷宫");
@@ -768,7 +775,15 @@
         block("unknownDialog", "结束迷宫出现未知弹窗，请手动处理");
         return;
       }
-      if (hasTimedOut()) block("endTimeout", "结束迷宫超时，请检查确认框");
+      if (lastTorchConfirmationAt > 0) {
+        const waitingMs = Date.now() - lastTorchConfirmationAt;
+        if (waitingMs >= ESCAPE_SERVER_TIMEOUT_MS) {
+          recordDebug("escapeServerTimeout", { waitingMs });
+          block("endTimeout", "服务器超过 60 秒未确认退出，请检查连接");
+        } else {
+          setStatus(`已确认火炬提示，等待服务器退出（${Math.ceil(waitingMs / 1000)} 秒）`);
+        }
+      } else if (hasTimedOut()) block("endTimeout", "结束迷宫超时，请检查确认框");
       else setStatus("正在确认并结束迷宫");
       return;
     }
@@ -885,7 +900,6 @@
         lastEscapeDialogClickAt = 0;
         escapeConfirmationCount = 0;
         lastTorchConfirmationAt = 0;
-        postTorchEndRetryIssued = false;
         const knownDialogStillOpen = escapeDialogCandidates().some((dialog) =>
           isKnownEscapeDialog(dialog.innerText || dialog.textContent)
         );
