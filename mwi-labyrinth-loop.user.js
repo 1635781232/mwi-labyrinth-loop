@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Milky Way Idle 测试服迷宫循环
 // @namespace    https://github.com/1635781232/mwi-labyrinth-loop
-// @version      0.3.0
+// @version      0.3.1
 // @description  使用游戏内置自动化循环进入、开始和结束迷宫，并在测试服自动补充入场券。
 // @author       1635781232
 // @license      MIT
@@ -22,7 +22,7 @@
   "use strict";
 
   const SCRIPT_ID = "mwi-labyrinth-loop";
-  const SCRIPT_VERSION = "0.3.0";
+  const SCRIPT_VERSION = "0.3.1";
   const STATE_VERSION = 4;
   const TICK_MS = 2000;
   const MUTATION_DEBOUNCE_MS = 150;
@@ -150,6 +150,12 @@
 
   function isVisible(element) {
     if (!(element instanceof HTMLElement)) return false;
+    if (
+      typeof element.checkVisibility === "function" &&
+      !element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
+    ) {
+      return false;
+    }
     const style = getComputedStyle(element);
     if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) return false;
     const rect = element.getBoundingClientRect();
@@ -401,26 +407,34 @@
   function handleEscapeConfirmation() {
     if (escapeConfirmationCount >= MAX_ESCAPE_CONFIRMATION_CLICKS) return false;
 
+    const matches = [];
     for (const dialog of escapeDialogCandidates()) {
       const dialogText = normalizeText(dialog.innerText || dialog.textContent);
       if (!isKnownEscapeDialog(dialogText)) continue;
       const confirmButton = findExactButton(TEXT.confirm, dialog, false);
       if (!confirmButton) continue;
-
-      const signature = dialogText.slice(0, 400);
-      if (
-        signature === lastEscapeDialogSignature &&
-        Date.now() - lastEscapeDialogClickAt < ESCAPE_CONFIRMATION_RETRY_MS
-      ) {
-        return false;
-      }
-      if (!safeClick(confirmButton, `确认结束迷宫（${escapeConfirmationCount + 1}）`)) return false;
-      lastEscapeDialogSignature = signature;
-      lastEscapeDialogClickAt = Date.now();
-      escapeConfirmationCount += 1;
-      return true;
+      matches.push({ dialogText, confirmButton, signature: dialogText.slice(0, 400) });
     }
-    return false;
+
+    const match =
+      matches.find((candidate) => candidate.signature !== lastEscapeDialogSignature) ||
+      matches.find(
+        (candidate) =>
+          candidate.signature === lastEscapeDialogSignature &&
+          Date.now() - lastEscapeDialogClickAt >= ESCAPE_CONFIRMATION_RETRY_MS
+      );
+    if (!match) return false;
+
+    const buttonText = normalizeText(match.confirmButton.innerText || match.confirmButton.textContent);
+    const description = `确认结束迷宫（${escapeConfirmationCount + 1}）：按钮“${buttonText}” · ${match.dialogText.slice(
+      0,
+      160
+    )}`;
+    if (!safeClick(match.confirmButton, description)) return false;
+    lastEscapeDialogSignature = match.signature;
+    lastEscapeDialogClickAt = Date.now();
+    escapeConfirmationCount += 1;
+    return true;
   }
 
   function hasUnknownDialog() {
