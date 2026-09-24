@@ -65,7 +65,8 @@ class FakeElement {
     return null;
   }
 
-  querySelectorAll() {
+  querySelectorAll(selector) {
+    if (selector === "button, a, [role='button']") return this.children;
     return [];
   }
 }
@@ -88,10 +89,17 @@ function createHarness() {
   const immediateStart = new FakeElement("button", "立即开始");
   const labyrinthStop = new FakeElement("button", "停止");
   const end = new FakeElement("button", "结束迷宫");
+  const cancelExit = new FakeElement("button", "取消");
+  const confirmExit = new FakeElement("button", "确定");
+  const torchDialog = new FakeElement("div", "你还有 388 个火把，确定要离开迷宫吗？");
+  torchDialog.children = [cancelExit, confirmExit];
+  cancelExit.parentElement = torchDialog;
+  confirmExit.parentElement = torchDialog;
   const labyrinthNav = new FakeElement("div", "迷宫");
   const labyrinthNavIcon = new FakeElement("svg");
   labyrinthNavIcon.parentElement = labyrinthNav;
   let pageButtons = [enter, flee, unrelatedStop];
+  let torchDialogVisible = false;
   immediateStart.addEventListener("click", () => {
     pageButtons = [unrelatedStop, labyrinthStop, end];
   });
@@ -99,6 +107,11 @@ function createHarness() {
   const body = new FakeElement("body");
   body.innerText = "入场券: 5 / 5";
   end.addEventListener("click", () => {
+    torchDialogVisible = true;
+  });
+  confirmExit.addEventListener("click", () => {
+    if (confirmExit.clickCount < 2) return;
+    torchDialogVisible = false;
     pageButtons = [];
     body.innerText = "";
   });
@@ -118,7 +131,9 @@ function createHarness() {
       return null;
     },
     querySelectorAll(selector) {
-      if (selector === "button, a, [role='button']") return pageButtons;
+      if (selector === "button, a, [role='button']") {
+        return torchDialogVisible ? [...pageButtons, cancelExit, confirmExit] : pageButtons;
+      }
       return [];
     },
   };
@@ -186,6 +201,7 @@ function createHarness() {
     enter,
     flee,
     end,
+    confirmExit,
     labyrinthNav,
     immediateStart,
     advance(milliseconds) {
@@ -239,6 +255,14 @@ assert.equal(harness.flee.clickCount, 0, "unrelated actions must remain untouche
 assert.equal(harness.immediateStart.clickCount, 1, "the labyrinth start button must only be clicked once");
 assert.equal(harness.end.clickCount, 1, "the labyrinth must be ended after its automation stops");
 assert.equal(harness.readState().phase, "ending", "the labyrinth must end after its own automation stops");
+
+harness.advance(1_000);
+harness.tick();
+assert.equal(harness.confirmExit.clickCount, 1, "the torch confirmation must be found outside semantic dialogs");
+
+harness.advance(2_500);
+harness.tick();
+assert.equal(harness.confirmExit.clickCount, 2, "an unchanged torch confirmation must be retried once");
 
 harness.advance(2_000);
 harness.tick();

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Milky Way Idle 测试服迷宫循环
 // @namespace    https://github.com/1635781232/mwi-labyrinth-loop
-// @version      0.2.8
+// @version      0.2.9
 // @description  使用游戏内置自动化循环进入、开始和结束迷宫，并在测试服自动补充入场券。
 // @author       1635781232
 // @license      MIT
@@ -31,7 +31,8 @@
   const NAVIGATION_RETRY_MS = 3000;
   const FALLBACK_LOCK_TTL_MS = 15000;
   const FALLBACK_LOCK_HEARTBEAT_MS = 5000;
-  const MAX_ESCAPE_CONFIRMATIONS = 2;
+  const MAX_ESCAPE_CONFIRMATION_CLICKS = 4;
+  const ESCAPE_CONFIRMATION_RETRY_MS = 2000;
 
   const TEXT = {
     enter: ["进入迷宫", "Enter Labyrinth"],
@@ -68,6 +69,7 @@
   let lastClickAt = 0;
   let lastOwnedRunNavigationAt = 0;
   let lastEscapeDialogSignature = "";
+  let lastEscapeDialogClickAt = 0;
   let escapeConfirmationCount = 0;
   let statusText = "脚本已停用";
   let logItems = [];
@@ -272,7 +274,9 @@
   }
 
   function dialogCandidates() {
-    const semantic = Array.from(document.querySelectorAll("[role='dialog'], [aria-modal='true']")).filter(isVisible);
+    const semantic = Array.from(
+      document.querySelectorAll("[role='dialog'], [role='alertdialog'], [aria-modal='true']")
+    ).filter(isVisible);
     const conventional = Array.from(document.querySelectorAll("[class*='modal' i], [class*='dialog' i]")).filter(isVisible);
     return Array.from(new Set([...semantic, ...conventional]));
   }
@@ -286,6 +290,9 @@
       );
     const knownTorchStep =
       /真的.{0,12}(确定|确认).{0,40}(火把|火炬).{0,40}(进度|继续)/i.test(normalized) ||
+      /(确定|确认|结束|离开|逃离|逃出|继续).{0,50}(火把|火炬)|(火把|火炬).{0,50}(确定|确认|结束|离开|逃离|逃出|继续|探索)/i.test(
+        normalized
+      ) ||
       /really\s+sure.{0,80}torches?\s+remaining.{0,80}(?:more\s+progress|progress)/i.test(normalized);
     const entrySupplyWarning =
       /补给.{0,20}(不足|未满)|未带满|携带.{0,20}火把.{0,20}进入|entering\s+with.{0,50}torches?\s+instead|entering\s+without.{0,50}suppl/i.test(
@@ -294,19 +301,48 @@
     return !entrySupplyWarning && (knownFirstStep || knownTorchStep);
   }
 
-  function handleEscapeConfirmation() {
-    if (escapeConfirmationCount >= MAX_ESCAPE_CONFIRMATIONS) return false;
+  function escapeDialogCandidates() {
+    const candidates = [...dialogCandidates()];
+    const wanted = new Set(TEXT.confirm.map(normalizeText));
+    const confirmButtons = clickableElements().filter(
+      (element) =>
+        isVisible(element) &&
+        !isDisabled(element) &&
+        wanted.has(normalizeText(element.innerText || element.textContent))
+    );
 
-    for (const dialog of dialogCandidates()) {
+    for (const button of confirmButtons) {
+      let ancestor = button.parentElement;
+      for (let depth = 0; ancestor && ancestor !== document.body && depth < 8; depth += 1) {
+        if (isVisible(ancestor) && isKnownEscapeDialog(ancestor.innerText || ancestor.textContent)) {
+          candidates.push(ancestor);
+          break;
+        }
+        ancestor = ancestor.parentElement;
+      }
+    }
+    return Array.from(new Set(candidates));
+  }
+
+  function handleEscapeConfirmation() {
+    if (escapeConfirmationCount >= MAX_ESCAPE_CONFIRMATION_CLICKS) return false;
+
+    for (const dialog of escapeDialogCandidates()) {
       const dialogText = normalizeText(dialog.innerText || dialog.textContent);
       if (!isKnownEscapeDialog(dialogText)) continue;
       const confirmButton = findExactButton(TEXT.confirm, dialog, false);
       if (!confirmButton) continue;
 
       const signature = dialogText.slice(0, 400);
-      if (signature === lastEscapeDialogSignature) return false;
+      if (
+        signature === lastEscapeDialogSignature &&
+        Date.now() - lastEscapeDialogClickAt < ESCAPE_CONFIRMATION_RETRY_MS
+      ) {
+        return false;
+      }
       if (!safeClick(confirmButton, `确认结束迷宫（${escapeConfirmationCount + 1}）`)) return false;
       lastEscapeDialogSignature = signature;
+      lastEscapeDialogClickAt = Date.now();
       escapeConfirmationCount += 1;
       return true;
     }
@@ -339,6 +375,7 @@
   function beginEnding(controls) {
     if (!safeClick(controls.endButton, "游戏内置自动化已停止，结束迷宫")) return;
     lastEscapeDialogSignature = "";
+    lastEscapeDialogClickAt = 0;
     escapeConfirmationCount = 0;
     setPhase("ending");
     setStatus("正在结束迷宫");
@@ -640,7 +677,12 @@
     if (controls.active && state.ownedRun) {
       if (reason === "endTimeout") {
         lastEscapeDialogSignature = "";
+        lastEscapeDialogClickAt = 0;
         escapeConfirmationCount = 0;
+        const knownDialogStillOpen = escapeDialogCandidates().some((dialog) =>
+          isKnownEscapeDialog(dialog.innerText || dialog.textContent)
+        );
+        if (!knownDialogStillOpen) safeClick(controls.endButton, "重新请求结束迷宫");
         setPhase("ending");
       } else if (state.startIssued) {
         setPhase("awaitRunning");
