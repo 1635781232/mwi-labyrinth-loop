@@ -31,7 +31,7 @@ class Element {
   querySelectorAll() { return []; }
   querySelector() { return null; }
   attachShadow() {
-    const elements = new Map([".toggle", ".status", ".meta", ".retry", ".copy", ".latest"]
+    const elements = new Map(["section", "header", ".toggle", ".status", ".meta", ".retry", ".copy", ".latest"]
       .map((selector) => [selector, new Element()]));
     this.shadowElements = elements;
     return { innerHTML: "", querySelector: (selector) => elements.get(selector) };
@@ -39,7 +39,8 @@ class Element {
 }
 
 function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFailures = 0,
-  captureSocket = true, ticketsInitiallyVisible = true, refillDisabled = false } = {}) {
+  captureSocket = true, ticketsInitiallyVisible = true, refillDisabled = false,
+  welcome = false, welcomeOffline = true } = {}) {
   let now = 100000;
   class Clock extends Date {
     constructor(...args) { super(...(args.length ? args : [now])); }
@@ -51,6 +52,13 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFail
   const stop = new Element("button", "停止");
   const end = new Element("button", "结束迷宫");
   const refill = new Element("button", "补充入场券");
+  const welcomeTitle = new Element("div", "欢迎回来!");
+  const welcomeDialog = new Element("div", welcomeOffline ?
+    "欢迎回来! 离线时间 18s 获得物品 关闭" : "欢迎回来! 其他提示 关闭");
+  const welcomeClose = new Element("button", "关闭");
+  welcomeTitle.parentElement = welcomeDialog;
+  welcomeDialog.querySelectorAll = () => welcome ? [welcomeClose] : [];
+  welcomeClose.addEventListener("click", () => { welcome = false; });
   refill.disabled = refillDisabled;
   const navLabyrinth = new Element("div", "迷宫");
   const navSettings = new Element("div", "设置");
@@ -135,15 +143,19 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFail
     querySelector: (selector) => selector.includes("navigationBar.labyrinth") ? iconLabyrinth :
       selector.includes("navigationBar.settings") ? iconSettings : null,
     querySelectorAll: (selector) => {
+      if (selector.startsWith("h1")) return welcome ? [welcomeTitle] : [];
       if (selector.startsWith("button")) return pageButtons;
-      if (selector.includes("role='dialog'")) return [];
+      if (selector.includes("role='dialog'")) return welcome ? [welcomeDialog] : [];
       return [];
     },
   };
   const intervals = [];
   const timers = [];
   const window = {
-    addEventListener() {},
+    innerWidth: 1000,
+    innerHeight: 700,
+    listeners: new Map(),
+    addEventListener(name, callback) { this.listeners.set(name, callback); },
   };
   const context = vm.createContext({
     console, document, window, HTMLElement: Element, MessageEvent: FakeMessageEvent,
@@ -170,8 +182,10 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFail
   assert.ok(host);
   host.shadowElements.get(".toggle").click();
   return {
-    start, end, enter, refill, navSettings, sent,
+    start, end, enter, refill, navSettings, sent, welcomeClose, host,
     tick(milliseconds = 2000) { now += milliseconds; intervals[0](); },
+    pointer(name, event) { window.listeners.get(name)?.(event); },
+    position() { return store.get("mwi-labyrinth-loop:panel-position:27538"); },
     finish() { floor = target; torches = 390; end.disabled = false; pageButtons = [start, end]; },
     state() { return store.get("mwi-labyrinth-loop:state:27538"); },
   };
@@ -196,6 +210,27 @@ assert.equal(flow.sent[2].type, "escape_labyrinth", "end at automation target");
 assert.equal(flow.end.clickCount, 0);
 flow.tick();
 assert.equal(flow.state().phase, "idle", "confirm server exit before the next run");
+
+const welcomeFlow = harness({ welcome: true });
+welcomeFlow.tick();
+assert.equal(welcomeFlow.welcomeClose.clickCount, 1, "close only the offline return popup first");
+assert.equal(welcomeFlow.sent.length, 0, "wait before issuing another game action");
+welcomeFlow.tick();
+assert.equal(welcomeFlow.sent[0].type, "start_labyrinth", "continue the maze after closing the popup");
+
+const otherPopup = harness({ welcome: true, welcomeOffline: false });
+otherPopup.tick();
+assert.equal(otherPopup.welcomeClose.clickCount, 0, "leave other dialogs untouched");
+assert.equal(otherPopup.state().phase, "paused", "pause for an unrecognized dialog");
+
+const header = welcomeFlow.host.shadowElements.get("header");
+header.listeners.get("pointerdown")({
+  button: 0, target: { closest: () => null }, clientX: 20, clientY: 20, preventDefault() {},
+});
+welcomeFlow.pointer("pointermove", { clientX: 130, clientY: 95 });
+welcomeFlow.pointer("pointerup", {});
+assert.equal(welcomeFlow.position().left, 120, "save the dragged panel's horizontal position");
+assert.equal(welcomeFlow.position().top, 85, "save the dragged panel's vertical position");
 
 const resumed = harness({ active: true, floor: 2 });
 resumed.tick();

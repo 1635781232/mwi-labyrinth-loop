@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Milky Way Idle 测试服迷宫循环
 // @namespace    https://github.com/1635781232/mwi-labyrinth-loop
-// @version      0.5.1
+// @version      0.5.2
 // @description  手动启用后，使用游戏内置自动化循环进入、开始、结束迷宫，并在测试服补充入场券。
 // @author       1635781232
 // @license      MIT
@@ -27,6 +27,7 @@
   const key = `${id}:state:${characterId}`;
   const lockKey = `${id}:lock:${characterId}`;
   const logKey = `${id}:debug:${characterId}`;
+  const panelPositionKey = `${id}:panel-position:${characterId}`;
   const owner = `${Date.now()}-${Math.random()}`;
   const saved = GM_getValue(key, {});
   const state = {
@@ -224,6 +225,29 @@
       .some((dialog) => visible(dialog) && label(dialog));
   }
 
+  function closeWelcomeBack() {
+    const title = [...document.querySelectorAll("h1, h2, h3, h4, div, span")]
+      .find((element) => visible(element) && /^(欢迎回来[！!]?|Welcome Back[!]?)$/i.test(label(element)));
+    if (!title) return false;
+    for (let container = title.parentElement, depth = 0; container && depth < 6; container = container.parentElement, depth++) {
+      const content = label(container);
+      if (!/离线时间|Offline Time/i.test(content)) continue;
+      const close = button(["关闭", "Close"], container);
+      if (!close) continue;
+      if (click(close, "关闭离线回归弹窗")) {
+        status = "已关闭离线回归弹窗，继续检查迷宫";
+        if (state.phase === "paused" && /未知弹窗/.test(state.error)) {
+          state.error = "";
+          phase("idle", status);
+        }
+      } else {
+        status = "等待操作间隔后关闭离线回归弹窗";
+      }
+      return true;
+    }
+    return false;
+  }
+
   function resetRun() {
     state.started = false;
     state.observed = false;
@@ -308,6 +332,7 @@
     if (!state.enabled) return;
     if (!lock()) { status = "同角色的另一标签页正在运行"; render(); return; }
     try {
+      if (closeWelcomeBack()) return;
       if (state.phase === "paused") return;
       const maze = activeMaze();
       if (maze) return runMaze(maze);
@@ -425,7 +450,8 @@
       section { position: fixed; top: 12px; right: 12px; z-index: 2147483647; width: 265px;
         box-sizing: border-box; padding: 12px; border-radius: 10px; background: #171b24;
         color: #eef2f8; font: 13px/1.5 sans-serif; box-shadow: 0 8px 24px #0008; }
-      header { display: flex; justify-content: space-between; align-items: center; }
+      header { display: flex; justify-content: space-between; align-items: center;
+        cursor: move; user-select: none; touch-action: none; }
       button { border: 0; border-radius: 5px; padding: 6px 10px; color: white; background: #335474; cursor: pointer; }
       .toggle { background: #27804b; } .status { margin-top: 8px; }
       .meta, pre { color: #aebccd; font-size: 11px; }
@@ -435,6 +461,8 @@
       <button class="copy">复制详细日志</button><pre class="latest"></pre></section>`;
     panel = {
       host,
+      section: root.querySelector("section"),
+      header: root.querySelector("header"),
       toggle: root.querySelector(".toggle"),
       status: root.querySelector(".status"),
       meta: root.querySelector(".meta"),
@@ -442,10 +470,41 @@
       copy: root.querySelector(".copy"),
       latest: root.querySelector(".latest"),
     };
+    const position = GM_getValue(panelPositionKey, null);
+    const placePanel = (left, top) => {
+      const rect = panel.section.getBoundingClientRect();
+      const x = Math.max(0, Math.min(left, Math.max(0, window.innerWidth - rect.width)));
+      const y = Math.max(0, Math.min(top, Math.max(0, window.innerHeight - rect.height)));
+      panel.section.style.left = `${x}px`;
+      panel.section.style.top = `${y}px`;
+      panel.section.style.right = "auto";
+      return { left: x, top: y };
+    };
+    if (Number.isFinite(position?.left) && Number.isFinite(position?.top)) {
+      placePanel(position.left, position.top);
+    }
+    let dragging = null;
+    panel.header.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || event.target.closest("button")) return;
+      const rect = panel.section.getBoundingClientRect();
+      dragging = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+      event.preventDefault();
+    });
+    window.addEventListener("pointermove", (event) => {
+      if (dragging) placePanel(event.clientX - dragging.x, event.clientY - dragging.y);
+    });
+    window.addEventListener("pointerup", () => {
+      if (!dragging) return;
+      dragging = null;
+      GM_setValue(panelPositionKey, {
+        left: parseFloat(panel.section.style.left),
+        top: parseFloat(panel.section.style.top),
+      });
+    });
     panel.toggle.addEventListener("click", toggle);
     panel.retry.addEventListener("click", retry);
     panel.copy.addEventListener("click", () => {
-      GM_setClipboard(JSON.stringify({ version: "0.5.1", characterId, state, status, logs }, null, 2));
+      GM_setClipboard(JSON.stringify({ version: "0.5.2", characterId, state, status, logs }, null, 2));
       status = "详细日志已复制";
       render();
     });
@@ -453,7 +512,7 @@
   }
 
   createPanel();
-  note("loaded", { version: "0.5.1" });
+  note("loaded", { version: "0.5.2" });
   new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true, characterData: true });
   setInterval(tick, 2000);
   window.addEventListener("beforeunload", unlock);
