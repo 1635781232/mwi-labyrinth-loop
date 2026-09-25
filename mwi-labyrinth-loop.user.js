@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Milky Way Idle 测试服迷宫循环
 // @namespace    https://github.com/1635781232/mwi-labyrinth-loop
-// @version      0.5.4
+// @version      0.5.5
 // @description  手动启用后，使用游戏内置自动化循环进入、开始、结束迷宫，并在测试服补充入场券。
 // @author       1635781232
 // @license      MIT
@@ -446,28 +446,36 @@
   function mountPanel() {
     if (!panel) return;
     const section = document.querySelector("[class*='LabyrinthPanel_buttonsSection']");
-    const actionRoot = section?.closest("[class*='LabyrinthPanel_labyrinthPanel']") || section?.parentElement;
-    const actions = actionRoot ? buttons(actionRoot).filter((element) => {
+    const entrance = button(["进入迷宫", "Enter Labyrinth"], document, true);
+    let actionRoot = section?.closest("[class*='LabyrinthPanel_labyrinthPanel']") ||
+      entrance?.closest("[class*='LabyrinthPanel_labyrinthPanel']") ||
+      section?.parentElement || entrance?.parentElement;
+    if (!section && entrance) {
+      const roomLeft = entrance.getBoundingClientRect().left - 146;
+      while (actionRoot?.parentElement && actionRoot.getBoundingClientRect().left > roomLeft) {
+        actionRoot = actionRoot.parentElement;
+      }
+    }
+    const actions = !section && entrance ? [entrance] : actionRoot ? buttons(actionRoot).filter((element) => {
       const name = label(element);
       return visible(element) && (/^添加队列/.test(name) ||
         ["停止", "结束迷宫", "信息", "立即开始", "开始", "进入迷宫",
           "Add to Queue", "Stop", "Escape Labyrinth", "Info", "Start Now", "Enter Labyrinth"].includes(name));
     }) : [];
-    if (!actionRoot || !visible(section) || !actions.length) {
+    if (!actionRoot || (!visible(section) && !visible(entrance)) || !actions.length) {
       panel.host.hidden = true;
       return;
     }
     const actionRects = actions.map((element) => element.getBoundingClientRect());
     const right = Math.max(...actionRects.map((rect) => rect.right));
+    const left = Math.min(...actionRects.map((rect) => rect.left));
     const top = Math.min(...actionRects.map((rect) => rect.top));
-    let root = actionRoot;
-    while (root.parentElement && root.getBoundingClientRect().right < right + 142) {
-      root = root.parentElement;
-    }
+    const root = actionRoot;
     if (panel.host.parentElement !== root) root.appendChild(panel.host);
     if (getComputedStyle(root).position === "static") root.style.position = "relative";
     const rootRect = root.getBoundingClientRect();
-    panel.host.style.left = `${Math.max(0, Math.min(right + 10, rootRect.right - 142) - rootRect.left)}px`;
+    const panelLeft = right + 146 <= rootRect.right - 6 ? right + 10 : left - 146;
+    panel.host.style.left = `${Math.max(0, Math.min(panelLeft, rootRect.right - 142) - rootRect.left)}px`;
     panel.host.style.top = `${Math.max(0, top - rootRect.top - 3)}px`;
     panel.host.hidden = false;
   }
@@ -516,7 +524,7 @@
     panel.expand.addEventListener("click", () => { panel.detailsOpen = !panel.detailsOpen; render(); });
     panel.retry.addEventListener("click", retry);
     panel.copy.addEventListener("click", () => {
-      GM_setClipboard(JSON.stringify({ version: "0.5.4", characterId, state, status, logs }, null, 2));
+      GM_setClipboard(JSON.stringify({ version: "0.5.5", characterId, state, status, logs }, null, 2));
       status = "详细日志已复制";
       render();
     });
@@ -525,7 +533,7 @@
   }
 
   createPanel();
-  note("loaded", { version: "0.5.4" });
+  note("loaded", { version: "0.5.5" });
   new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true, characterData: true });
   setInterval(tick, 2000);
   window.addEventListener("beforeunload", unlock);

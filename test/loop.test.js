@@ -53,6 +53,7 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFail
   }
   const store = new Map();
   const enter = new Element("button", "进入迷宫");
+  enter.rect = { left: 1454, top: 583, right: 1505, bottom: 607, width: 51, height: 24 };
   const start = new Element("button", "立即开始");
   const stop = new Element("button", "停止");
   const end = new Element("button", "结束迷宫");
@@ -101,6 +102,7 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFail
   updateTickets();
   if (!ticketsInitiallyVisible) body.innerText = "";
   end.closest = () => panel;
+  enter.closest = () => panel;
   panel.querySelectorAll = (selector) =>
     selector.includes("settingLabel") ? [setting] :
       selector.startsWith("button") ? pageButtons : [];
@@ -201,6 +203,7 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFail
     start, end, enter, refill, navSettings, sent, welcomeClose, host, panel,
     tick(milliseconds = 2000) { now += milliseconds; intervals[0](); },
     showButtons() { buttonsInitiallyVisible = true; },
+    hideButtons() { buttonsInitiallyVisible = false; pageButtons = []; },
     finish() { floor = target; torches = 390; end.disabled = false; pageButtons = [queue, start, end, info]; },
     state() { return store.get("mwi-labyrinth-loop:state:27538"); },
   };
@@ -248,12 +251,19 @@ assert.equal(welcomeFlow.host.shadowElements.get(".details").hidden, false,
   "keep detailed status and log actions accessible in the inline panel");
 
 const delayedButtons = harness({ buttonsInitiallyVisible: false });
-assert.equal(delayedButtons.host.hidden, true, "hide the panel until the lower controls exist");
+assert.equal(delayedButtons.host.parentElement, delayedButtons.panel,
+  "mount on the entrance screen even without the active-maze button section");
+assert.equal(delayedButtons.host.hidden, false);
+assert.equal(delayedButtons.host.style.left, "1148px",
+  "place the panel left of Enter Labyrinth when there is no room on the right");
 delayedButtons.showButtons();
 delayedButtons.tick();
 assert.equal(delayedButtons.host.parentElement, delayedButtons.panel,
   "mount after the game renders the lower action buttons");
 assert.equal(delayedButtons.host.hidden, false);
+delayedButtons.hideButtons();
+delayedButtons.tick();
+assert.equal(delayedButtons.host.hidden, true, "hide away from the labyrinth controls");
 
 const resumed = harness({ active: true, floor: 2 });
 resumed.tick();
