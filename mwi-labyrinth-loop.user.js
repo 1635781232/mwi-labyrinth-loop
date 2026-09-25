@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Milky Way Idle 测试服迷宫循环
 // @namespace    https://github.com/1635781232/mwi-labyrinth-loop
-// @version      0.5.3
+// @version      0.5.4
 // @description  手动启用后，使用游戏内置自动化循环进入、开始、结束迷宫，并在测试服补充入场券。
 // @author       1635781232
 // @license      MIT
@@ -445,38 +445,30 @@
 
   function mountPanel() {
     if (!panel) return;
-    if (panel.host.parentElement !== document.body && visible(panel.host.parentElement)) {
-      panel.host.hidden = false;
-      return;
-    }
-    const names = ["迷宫", "房间", "自动化", "迷宫商店"];
-    const matches = [...document.querySelectorAll("button, a, [role='tab'], [role='button'], div, span")]
-      .filter((element) => names.includes(label(element)) && visible(element));
-    const branch = (element, ancestor) => {
-      for (let node = element; node && node !== ancestor; node = node.parentElement) {
-        if (node.parentElement === ancestor) return node;
-      }
-      return null;
-    };
-    let bar = null;
-    for (const mazeTab of matches.filter((element) => label(element) === "迷宫")) {
-      for (let ancestor = mazeTab.parentElement, depth = 0; ancestor && depth < 5;
-        ancestor = ancestor.parentElement, depth++) {
-        const branches = names.map((name) => matches
-          .filter((element) => label(element) === name)
-          .map((element) => branch(element, ancestor)).find(Boolean));
-        if (branches.every(Boolean) && new Set(branches).size === names.length) {
-          bar = ancestor;
-          break;
-        }
-      }
-      if (bar) break;
-    }
-    if (!bar) {
+    const section = document.querySelector("[class*='LabyrinthPanel_buttonsSection']");
+    const actionRoot = section?.closest("[class*='LabyrinthPanel_labyrinthPanel']") || section?.parentElement;
+    const actions = actionRoot ? buttons(actionRoot).filter((element) => {
+      const name = label(element);
+      return visible(element) && (/^添加队列/.test(name) ||
+        ["停止", "结束迷宫", "信息", "立即开始", "开始", "进入迷宫",
+          "Add to Queue", "Stop", "Escape Labyrinth", "Info", "Start Now", "Enter Labyrinth"].includes(name));
+    }) : [];
+    if (!actionRoot || !visible(section) || !actions.length) {
       panel.host.hidden = true;
       return;
     }
-    if (panel.host.parentElement !== bar) bar.appendChild(panel.host);
+    const actionRects = actions.map((element) => element.getBoundingClientRect());
+    const right = Math.max(...actionRects.map((rect) => rect.right));
+    const top = Math.min(...actionRects.map((rect) => rect.top));
+    let root = actionRoot;
+    while (root.parentElement && root.getBoundingClientRect().right < right + 142) {
+      root = root.parentElement;
+    }
+    if (panel.host.parentElement !== root) root.appendChild(panel.host);
+    if (getComputedStyle(root).position === "static") root.style.position = "relative";
+    const rootRect = root.getBoundingClientRect();
+    panel.host.style.left = `${Math.max(0, Math.min(right + 10, rootRect.right - 142) - rootRect.left)}px`;
+    panel.host.style.top = `${Math.max(0, top - rootRect.top - 3)}px`;
     panel.host.hidden = false;
   }
 
@@ -487,16 +479,20 @@
     document.body.appendChild(host);
     const root = host.attachShadow({ mode: "open" });
     root.innerHTML = `<style>
-      :host { display: inline-flex; align-self: center; margin-left: 8px; font: 11px sans-serif; }
+      :host { position: absolute; z-index: 20; display: block; font: 11px sans-serif; }
       :host([hidden]), [hidden] { display: none !important; }
-      section { display: flex; align-items: center; flex-wrap: wrap; gap: 5px;
-        box-sizing: border-box; max-width: 500px; padding: 3px 6px; border-radius: 5px;
+      section { position: relative; display: flex; align-content: start; align-items: center;
+        flex-wrap: wrap; gap: 3px; box-sizing: border-box; width: 136px; min-height: 52px;
+        padding: 4px; border-radius: 5px;
         background: #171b24; color: #eef2f8; }
-      .status { max-width: 180px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-      button { border: 0; border-radius: 4px; padding: 4px 7px; color: white;
+      strong { flex: 1; white-space: nowrap; }
+      .status { order: 4; flex-basis: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+      button { border: 0; border-radius: 4px; padding: 2px 3px; color: white;
         background: #335474; cursor: pointer; font: inherit; }
       .toggle { background: #27804b; }
-      .details { flex-basis: 100%; min-width: 265px; }
+      .details { position: absolute; top: 100%; right: 0; z-index: 1; box-sizing: border-box;
+        width: 265px; padding: 8px; border-radius: 5px; background: #171b24;
+        box-shadow: 0 8px 24px #0008; }
       .meta, pre { color: #aebccd; font-size: 11px; }
       pre { white-space: pre-wrap; margin: 4px 0 0; }
       .copy, .retry { margin-top: 5px; }
@@ -520,7 +516,7 @@
     panel.expand.addEventListener("click", () => { panel.detailsOpen = !panel.detailsOpen; render(); });
     panel.retry.addEventListener("click", retry);
     panel.copy.addEventListener("click", () => {
-      GM_setClipboard(JSON.stringify({ version: "0.5.3", characterId, state, status, logs }, null, 2));
+      GM_setClipboard(JSON.stringify({ version: "0.5.4", characterId, state, status, logs }, null, 2));
       status = "详细日志已复制";
       render();
     });
@@ -529,7 +525,7 @@
   }
 
   createPanel();
-  note("loaded", { version: "0.5.3" });
+  note("loaded", { version: "0.5.4" });
   new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true, characterData: true });
   setInterval(tick, 2000);
   window.addEventListener("beforeunload", unlock);

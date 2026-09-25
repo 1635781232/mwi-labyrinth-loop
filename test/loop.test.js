@@ -30,7 +30,7 @@ class Element {
   click() { this.clickCount++; this.listeners.get("click")?.(); }
   hasAttribute(name) { return this.attributes.has(name); }
   getAttribute(name) { return this.attributes.get(name) ?? null; }
-  getBoundingClientRect() { return { left: 10, top: 10, width: 100, height: 30 }; }
+  getBoundingClientRect() { return this.rect || { left: 10, top: 10, right: 110, bottom: 40, width: 100, height: 30 }; }
   contains(element) { return element === this; }
   closest() { return null; }
   querySelectorAll() { return []; }
@@ -45,7 +45,7 @@ class Element {
 
 function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFailures = 0,
   captureSocket = true, ticketsInitiallyVisible = true, refillDisabled = false,
-  welcome = false, welcomeOffline = true, tabsInitiallyVisible = true, nestedTabs = false } = {}) {
+  welcome = false, welcomeOffline = true, buttonsInitiallyVisible = true } = {}) {
   let now = 100000;
   class Clock extends Date {
     constructor(...args) { super(...(args.length ? args : [now])); }
@@ -56,6 +56,12 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFail
   const start = new Element("button", "立即开始");
   const stop = new Element("button", "停止");
   const end = new Element("button", "结束迷宫");
+  const queue = new Element("button", "添加队列 #3");
+  const info = new Element("button", "信息");
+  queue.rect = { left: 1088, top: 579, right: 1163, bottom: 600, width: 75, height: 21 };
+  start.rect = stop.rect = { left: 1168, top: 579, right: 1243, bottom: 600, width: 75, height: 21 };
+  end.rect = { left: 1088, top: 604, right: 1163, bottom: 625, width: 75, height: 21 };
+  info.rect = { left: 1168, top: 604, right: 1243, bottom: 625, width: 75, height: 21 };
   const refill = new Element("button", "补充入场券");
   const welcomeTitle = new Element("div", "欢迎回来!");
   const welcomeDialog = new Element("div", welcomeOffline ?
@@ -72,12 +78,11 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFail
   iconLabyrinth.parentElement = navLabyrinth;
   iconSettings.parentElement = navSettings;
   const body = new Element("body");
-  const tabBar = body.appendChild(new Element("div"));
-  const tabs = ["迷宫", "房间", "自动化", "迷宫商店"].map((name) => {
-    if (!nestedTabs) return tabBar.appendChild(new Element("button", name));
-    return tabBar.appendChild(new Element("div")).appendChild(new Element("span", name));
-  });
-  const panel = new Element("div");
+  const panel = body.appendChild(new Element("div"));
+  panel.rect = { left: 160, top: 90, right: 1520, bottom: 630, width: 1360, height: 540 };
+  const buttonsSection = panel.appendChild(new Element("div"));
+  buttonsSection.rect = { left: 1080, top: 560, right: 1520, bottom: 630, width: 440, height: 70 };
+  buttonsSection.closest = () => panel;
   const label = new Element("div");
   const setting = new Element("span", "完全自动化到层数:");
   const settingRow = new Element("div");
@@ -90,7 +95,7 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFail
   torchIcon.closest = () => torchBox;
   torchBox.querySelector = () => torchCount;
   let torches = 400;
-  let pageButtons = active ? [start, end] : [enter];
+  let pageButtons = active ? [queue, start, end, info] : [enter];
   let settingsOpen = false;
   const updateTickets = () => { body.innerText = `入场券: ${tickets} / 5`; };
   updateTickets();
@@ -98,7 +103,7 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFail
   end.closest = () => panel;
   panel.querySelectorAll = (selector) =>
     selector.includes("settingLabel") ? [setting] :
-      selector.startsWith("button") ? pageButtons.filter((item) => [start, stop, end].includes(item)) : [];
+      selector.startsWith("button") ? pageButtons : [];
   panel.querySelector = (selector) => {
     if (selector.includes("buttonsSection")) {
       label.innerText = `第 ${floor} 层 (宝藏: 0 / 2)`;
@@ -117,11 +122,11 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFail
     floor = 1;
     torches = 400;
     settingsOpen = false;
-    pageButtons = [start, end];
+    pageButtons = [queue, start, end, info];
   });
   start.addEventListener("click", () => {
     end.disabled = true;
-    pageButtons = [stop, end];
+    pageButtons = [queue, stop, end, info];
   });
   navSettings.addEventListener("click", () => { settingsOpen = true; pageButtons = [refill]; });
   navLabyrinth.addEventListener("click", () => {
@@ -151,10 +156,10 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFail
     body,
     createElement: (tag) => new Element(tag),
     querySelector: (selector) => selector.includes("navigationBar.labyrinth") ? iconLabyrinth :
-      selector.includes("navigationBar.settings") ? iconSettings : null,
+      selector.includes("navigationBar.settings") ? iconSettings :
+        selector.includes("LabyrinthPanel_buttonsSection") && buttonsInitiallyVisible ? buttonsSection : null,
     querySelectorAll: (selector) => {
       if (selector.startsWith("h1")) return welcome ? [welcomeTitle] : [];
-      if (selector.startsWith("button, a, [role='tab']")) return tabsInitiallyVisible ? [navLabyrinth, ...tabs] : [];
       if (selector.startsWith("button")) return pageButtons;
       if (selector.includes("role='dialog'")) return welcome ? [welcomeDialog] : [];
       return [];
@@ -173,7 +178,7 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFail
     WebSocket: FakeSocket, MutationObserver: class { observe() {} },
     Date: Clock, Math, JSON, URL,
     location: { href: "https://test.milkywayidle.com/game?characterId=27538" },
-    getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+    getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1", position: "static" }),
     localStorage: {
       getItem: (key) => store.get(key) ?? null,
       setItem: (key, value) => store.set(key, String(value)),
@@ -189,14 +194,14 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFail
   const file = path.resolve(__dirname, "..", "mwi-labyrinth-loop.user.js");
   vm.runInContext(fs.readFileSync(file, "utf8"), context, { filename: file });
   if (captureSocket) void new FakeMessageEvent(new FakeSocket()).data;
-  const host = [...body.children, ...tabBar.children].find((element) => element.id === "mwi-labyrinth-loop-host");
+  const host = [...body.children, ...panel.children].find((element) => element.id === "mwi-labyrinth-loop-host");
   assert.ok(host);
   host.shadowElements.get(".toggle").click();
   return {
-    start, end, enter, refill, navSettings, sent, welcomeClose, host, tabBar,
+    start, end, enter, refill, navSettings, sent, welcomeClose, host, panel,
     tick(milliseconds = 2000) { now += milliseconds; intervals[0](); },
-    showTabs() { tabsInitiallyVisible = true; },
-    finish() { floor = target; torches = 390; end.disabled = false; pageButtons = [start, end]; },
+    showButtons() { buttonsInitiallyVisible = true; },
+    finish() { floor = target; torches = 390; end.disabled = false; pageButtons = [queue, start, end, info]; },
     state() { return store.get("mwi-labyrinth-loop:state:27538"); },
   };
 }
@@ -227,29 +232,28 @@ assert.equal(welcomeFlow.welcomeClose.clickCount, 1, "close only the offline ret
 assert.equal(welcomeFlow.sent.length, 0, "wait before issuing another game action");
 welcomeFlow.tick();
 assert.equal(welcomeFlow.sent[0].type, "start_labyrinth", "continue the maze after closing the popup");
+welcomeFlow.tick();
 
 const otherPopup = harness({ welcome: true, welcomeOffline: false });
 otherPopup.tick();
 assert.equal(otherPopup.welcomeClose.clickCount, 0, "leave other dialogs untouched");
 assert.equal(otherPopup.state().phase, "paused", "pause for an unrecognized dialog");
 
-assert.equal(welcomeFlow.host.parentElement, welcomeFlow.tabBar,
-  "mount the controls beside the four labyrinth tabs");
+assert.equal(welcomeFlow.host.parentElement, welcomeFlow.panel,
+  "mount beside the four lower labyrinth action buttons");
+assert.equal(welcomeFlow.host.style.left, "1093px", "place the panel 10px right of the action buttons");
+assert.equal(welcomeFlow.host.style.top, "486px", "align the panel with the action buttons");
 welcomeFlow.host.shadowElements.get(".expand").click();
 assert.equal(welcomeFlow.host.shadowElements.get(".details").hidden, false,
   "keep detailed status and log actions accessible in the inline panel");
 
-const delayedTabs = harness({ tabsInitiallyVisible: false });
-assert.equal(delayedTabs.host.hidden, true, "hide the panel until the labyrinth tabs exist");
-delayedTabs.showTabs();
-delayedTabs.tick();
-assert.equal(delayedTabs.host.parentElement, delayedTabs.tabBar,
-  "mount after the game renders the labyrinth tabs");
-assert.equal(delayedTabs.host.hidden, false);
-
-const nested = harness({ nestedTabs: true });
-assert.equal(nested.host.parentElement, nested.tabBar,
-  "find the tab row when labels are nested inside div controls");
+const delayedButtons = harness({ buttonsInitiallyVisible: false });
+assert.equal(delayedButtons.host.hidden, true, "hide the panel until the lower controls exist");
+delayedButtons.showButtons();
+delayedButtons.tick();
+assert.equal(delayedButtons.host.parentElement, delayedButtons.panel,
+  "mount after the game renders the lower action buttons");
+assert.equal(delayedButtons.host.hidden, false);
 
 const resumed = harness({ active: true, floor: 2 });
 resumed.tick();
