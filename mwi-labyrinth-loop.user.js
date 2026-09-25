@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Milky Way Idle 测试服迷宫循环
 // @namespace    https://github.com/1635781232/mwi-labyrinth-loop
-// @version      0.5.2
+// @version      0.5.3
 // @description  手动启用后，使用游戏内置自动化循环进入、开始、结束迷宫，并在测试服补充入场券。
 // @author       1635781232
 // @license      MIT
@@ -27,7 +27,6 @@
   const key = `${id}:state:${characterId}`;
   const lockKey = `${id}:lock:${characterId}`;
   const logKey = `${id}:debug:${characterId}`;
-  const panelPositionKey = `${id}:panel-position:${characterId}`;
   const owner = `${Date.now()}-${Math.random()}`;
   const saved = GM_getValue(key, {});
   const state = {
@@ -329,6 +328,7 @@
   }
 
   function tick() {
+    mountPanel();
     if (!state.enabled) return;
     if (!lock()) { status = "同角色的另一标签页正在运行"; render(); return; }
     try {
@@ -435,34 +435,80 @@
     panel.host.dataset.status = status;
     panel.toggle.textContent = state.enabled ? "停用" : "启用";
     panel.status.textContent = status;
+    panel.status.title = status;
     panel.meta.textContent = `角色 ${characterId} · ${state.phase}`;
     panel.retry.hidden = state.phase !== "paused";
+    panel.details.hidden = !panel.detailsOpen && state.phase !== "paused";
+    panel.expand.textContent = panel.details.hidden ? "详情" : "收起";
     panel.latest.textContent = logs.slice(-3).map((item) => `${item.time.slice(11, 19)} ${item.event} ${item.action || item.message || ""}`).join("\n");
+  }
+
+  function mountPanel() {
+    if (!panel) return;
+    if (panel.host.parentElement !== document.body && visible(panel.host.parentElement)) {
+      panel.host.hidden = false;
+      return;
+    }
+    const names = ["迷宫", "房间", "自动化", "迷宫商店"];
+    const matches = [...document.querySelectorAll("button, a, [role='tab'], [role='button'], div, span")]
+      .filter((element) => names.includes(label(element)) && visible(element));
+    const branch = (element, ancestor) => {
+      for (let node = element; node && node !== ancestor; node = node.parentElement) {
+        if (node.parentElement === ancestor) return node;
+      }
+      return null;
+    };
+    let bar = null;
+    for (const mazeTab of matches.filter((element) => label(element) === "迷宫")) {
+      for (let ancestor = mazeTab.parentElement, depth = 0; ancestor && depth < 5;
+        ancestor = ancestor.parentElement, depth++) {
+        const branches = names.map((name) => matches
+          .filter((element) => label(element) === name)
+          .map((element) => branch(element, ancestor)).find(Boolean));
+        if (branches.every(Boolean) && new Set(branches).size === names.length) {
+          bar = ancestor;
+          break;
+        }
+      }
+      if (bar) break;
+    }
+    if (!bar) {
+      panel.host.hidden = true;
+      return;
+    }
+    if (panel.host.parentElement !== bar) bar.appendChild(panel.host);
+    panel.host.hidden = false;
   }
 
   function createPanel() {
     const host = document.createElement("div");
     host.id = `${id}-host`;
+    host.hidden = true;
     document.body.appendChild(host);
     const root = host.attachShadow({ mode: "open" });
     root.innerHTML = `<style>
-      :host { all: initial; }
-      section { position: fixed; top: 12px; right: 12px; z-index: 2147483647; width: 265px;
-        box-sizing: border-box; padding: 12px; border-radius: 10px; background: #171b24;
-        color: #eef2f8; font: 13px/1.5 sans-serif; box-shadow: 0 8px 24px #0008; }
-      header { display: flex; justify-content: space-between; align-items: center;
-        cursor: move; user-select: none; touch-action: none; }
-      button { border: 0; border-radius: 5px; padding: 6px 10px; color: white; background: #335474; cursor: pointer; }
-      .toggle { background: #27804b; } .status { margin-top: 8px; }
+      :host { display: inline-flex; align-self: center; margin-left: 8px; font: 11px sans-serif; }
+      :host([hidden]), [hidden] { display: none !important; }
+      section { display: flex; align-items: center; flex-wrap: wrap; gap: 5px;
+        box-sizing: border-box; max-width: 500px; padding: 3px 6px; border-radius: 5px;
+        background: #171b24; color: #eef2f8; }
+      .status { max-width: 180px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+      button { border: 0; border-radius: 4px; padding: 4px 7px; color: white;
+        background: #335474; cursor: pointer; font: inherit; }
+      .toggle { background: #27804b; }
+      .details { flex-basis: 100%; min-width: 265px; }
       .meta, pre { color: #aebccd; font-size: 11px; }
-      pre { white-space: pre-wrap; margin-bottom: 0; } .copy, .retry { width: 100%; margin-top: 6px; }
-    </style><section><header><strong>迷宫循环 · 测试服</strong><button class="toggle"></button></header>
-      <div class="status"></div><div class="meta"></div><button class="retry">重试</button>
-      <button class="copy">复制详细日志</button><pre class="latest"></pre></section>`;
+      pre { white-space: pre-wrap; margin: 4px 0 0; }
+      .copy, .retry { margin-top: 5px; }
+    </style><section><strong>迷宫循环</strong><span class="status"></span>
+      <button class="toggle"></button><button class="expand">详情</button>
+      <div class="details" hidden><div class="meta"></div><button class="retry">重试</button>
+      <button class="copy">复制详细日志</button><pre class="latest"></pre></div></section>`;
     panel = {
       host,
-      section: root.querySelector("section"),
-      header: root.querySelector("header"),
+      details: root.querySelector(".details"),
+      expand: root.querySelector(".expand"),
+      detailsOpen: false,
       toggle: root.querySelector(".toggle"),
       status: root.querySelector(".status"),
       meta: root.querySelector(".meta"),
@@ -470,49 +516,20 @@
       copy: root.querySelector(".copy"),
       latest: root.querySelector(".latest"),
     };
-    const position = GM_getValue(panelPositionKey, null);
-    const placePanel = (left, top) => {
-      const rect = panel.section.getBoundingClientRect();
-      const x = Math.max(0, Math.min(left, Math.max(0, window.innerWidth - rect.width)));
-      const y = Math.max(0, Math.min(top, Math.max(0, window.innerHeight - rect.height)));
-      panel.section.style.left = `${x}px`;
-      panel.section.style.top = `${y}px`;
-      panel.section.style.right = "auto";
-      return { left: x, top: y };
-    };
-    if (Number.isFinite(position?.left) && Number.isFinite(position?.top)) {
-      placePanel(position.left, position.top);
-    }
-    let dragging = null;
-    panel.header.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0 || event.target.closest("button")) return;
-      const rect = panel.section.getBoundingClientRect();
-      dragging = { x: event.clientX - rect.left, y: event.clientY - rect.top };
-      event.preventDefault();
-    });
-    window.addEventListener("pointermove", (event) => {
-      if (dragging) placePanel(event.clientX - dragging.x, event.clientY - dragging.y);
-    });
-    window.addEventListener("pointerup", () => {
-      if (!dragging) return;
-      dragging = null;
-      GM_setValue(panelPositionKey, {
-        left: parseFloat(panel.section.style.left),
-        top: parseFloat(panel.section.style.top),
-      });
-    });
     panel.toggle.addEventListener("click", toggle);
+    panel.expand.addEventListener("click", () => { panel.detailsOpen = !panel.detailsOpen; render(); });
     panel.retry.addEventListener("click", retry);
     panel.copy.addEventListener("click", () => {
-      GM_setClipboard(JSON.stringify({ version: "0.5.2", characterId, state, status, logs }, null, 2));
+      GM_setClipboard(JSON.stringify({ version: "0.5.3", characterId, state, status, logs }, null, 2));
       status = "详细日志已复制";
       render();
     });
+    mountPanel();
     render();
   }
 
   createPanel();
-  note("loaded", { version: "0.5.2" });
+  note("loaded", { version: "0.5.3" });
   new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true, characterData: true });
   setInterval(tick, 2000);
   window.addEventListener("beforeunload", unlock);

@@ -21,7 +21,12 @@ class Element {
     this.dataset = {};
   }
   addEventListener(name, callback) { this.listeners.set(name, callback); }
-  appendChild(child) { this.children.push(child); child.parentElement = this; return child; }
+  appendChild(child) {
+    if (child.parentElement) child.parentElement.children = child.parentElement.children.filter((item) => item !== child);
+    this.children.push(child);
+    child.parentElement = this;
+    return child;
+  }
   click() { this.clickCount++; this.listeners.get("click")?.(); }
   hasAttribute(name) { return this.attributes.has(name); }
   getAttribute(name) { return this.attributes.get(name) ?? null; }
@@ -31,7 +36,7 @@ class Element {
   querySelectorAll() { return []; }
   querySelector() { return null; }
   attachShadow() {
-    const elements = new Map(["section", "header", ".toggle", ".status", ".meta", ".retry", ".copy", ".latest"]
+    const elements = new Map([".details", ".expand", ".toggle", ".status", ".meta", ".retry", ".copy", ".latest"]
       .map((selector) => [selector, new Element()]));
     this.shadowElements = elements;
     return { innerHTML: "", querySelector: (selector) => elements.get(selector) };
@@ -40,7 +45,7 @@ class Element {
 
 function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFailures = 0,
   captureSocket = true, ticketsInitiallyVisible = true, refillDisabled = false,
-  welcome = false, welcomeOffline = true } = {}) {
+  welcome = false, welcomeOffline = true, tabsInitiallyVisible = true, nestedTabs = false } = {}) {
   let now = 100000;
   class Clock extends Date {
     constructor(...args) { super(...(args.length ? args : [now])); }
@@ -67,6 +72,11 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFail
   iconLabyrinth.parentElement = navLabyrinth;
   iconSettings.parentElement = navSettings;
   const body = new Element("body");
+  const tabBar = body.appendChild(new Element("div"));
+  const tabs = ["迷宫", "房间", "自动化", "迷宫商店"].map((name) => {
+    if (!nestedTabs) return tabBar.appendChild(new Element("button", name));
+    return tabBar.appendChild(new Element("div")).appendChild(new Element("span", name));
+  });
   const panel = new Element("div");
   const label = new Element("div");
   const setting = new Element("span", "完全自动化到层数:");
@@ -144,6 +154,7 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFail
       selector.includes("navigationBar.settings") ? iconSettings : null,
     querySelectorAll: (selector) => {
       if (selector.startsWith("h1")) return welcome ? [welcomeTitle] : [];
+      if (selector.startsWith("button, a, [role='tab']")) return tabsInitiallyVisible ? [navLabyrinth, ...tabs] : [];
       if (selector.startsWith("button")) return pageButtons;
       if (selector.includes("role='dialog'")) return welcome ? [welcomeDialog] : [];
       return [];
@@ -178,14 +189,13 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFail
   const file = path.resolve(__dirname, "..", "mwi-labyrinth-loop.user.js");
   vm.runInContext(fs.readFileSync(file, "utf8"), context, { filename: file });
   if (captureSocket) void new FakeMessageEvent(new FakeSocket()).data;
-  const host = body.children.find((element) => element.id === "mwi-labyrinth-loop-host");
+  const host = [...body.children, ...tabBar.children].find((element) => element.id === "mwi-labyrinth-loop-host");
   assert.ok(host);
   host.shadowElements.get(".toggle").click();
   return {
-    start, end, enter, refill, navSettings, sent, welcomeClose, host,
+    start, end, enter, refill, navSettings, sent, welcomeClose, host, tabBar,
     tick(milliseconds = 2000) { now += milliseconds; intervals[0](); },
-    pointer(name, event) { window.listeners.get(name)?.(event); },
-    position() { return store.get("mwi-labyrinth-loop:panel-position:27538"); },
+    showTabs() { tabsInitiallyVisible = true; },
     finish() { floor = target; torches = 390; end.disabled = false; pageButtons = [start, end]; },
     state() { return store.get("mwi-labyrinth-loop:state:27538"); },
   };
@@ -223,14 +233,23 @@ otherPopup.tick();
 assert.equal(otherPopup.welcomeClose.clickCount, 0, "leave other dialogs untouched");
 assert.equal(otherPopup.state().phase, "paused", "pause for an unrecognized dialog");
 
-const header = welcomeFlow.host.shadowElements.get("header");
-header.listeners.get("pointerdown")({
-  button: 0, target: { closest: () => null }, clientX: 20, clientY: 20, preventDefault() {},
-});
-welcomeFlow.pointer("pointermove", { clientX: 130, clientY: 95 });
-welcomeFlow.pointer("pointerup", {});
-assert.equal(welcomeFlow.position().left, 120, "save the dragged panel's horizontal position");
-assert.equal(welcomeFlow.position().top, 85, "save the dragged panel's vertical position");
+assert.equal(welcomeFlow.host.parentElement, welcomeFlow.tabBar,
+  "mount the controls beside the four labyrinth tabs");
+welcomeFlow.host.shadowElements.get(".expand").click();
+assert.equal(welcomeFlow.host.shadowElements.get(".details").hidden, false,
+  "keep detailed status and log actions accessible in the inline panel");
+
+const delayedTabs = harness({ tabsInitiallyVisible: false });
+assert.equal(delayedTabs.host.hidden, true, "hide the panel until the labyrinth tabs exist");
+delayedTabs.showTabs();
+delayedTabs.tick();
+assert.equal(delayedTabs.host.parentElement, delayedTabs.tabBar,
+  "mount after the game renders the labyrinth tabs");
+assert.equal(delayedTabs.host.hidden, false);
+
+const nested = harness({ nestedTabs: true });
+assert.equal(nested.host.parentElement, nested.tabBar,
+  "find the tab row when labels are nested inside div controls");
 
 const resumed = harness({ active: true, floor: 2 });
 resumed.tick();
