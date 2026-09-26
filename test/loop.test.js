@@ -45,13 +45,16 @@ class Element {
 
 function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFailures = 0,
   captureSocket = true, ticketsInitiallyVisible = true, refillDisabled = false,
-  welcome = false, welcomeOffline = true, buttonsInitiallyVisible = true } = {}) {
+  welcome = false, welcomeOffline = true, buttonsInitiallyVisible = true,
+  savedState = null,
+  hideOnEscape = false } = {}) {
   let now = 100000;
   class Clock extends Date {
     constructor(...args) { super(...(args.length ? args : [now])); }
     static now() { return now; }
   }
   const store = new Map();
+  if (savedState) store.set("mwi-labyrinth-loop:state:27538", savedState);
   const enter = new Element("button", "进入迷宫");
   enter.rect = { left: 1454, top: 583, right: 1505, bottom: 607, width: 51, height: 24 };
   const start = new Element("button", "立即开始");
@@ -146,7 +149,7 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFail
       sent.push(message);
       if (message.type === "start_labyrinth") enter.listeners.get("click")();
       if (message.type === "new_character_action") start.listeners.get("click")();
-      if (message.type === "escape_labyrinth") pageButtons = [enter];
+      if (message.type === "escape_labyrinth") pageButtons = hideOnEscape ? [] : [enter];
       if (message.type === "force_refill_labyrinth_entries") refill.listeners.get("click")();
     }
   }
@@ -198,9 +201,9 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFail
   if (captureSocket) void new FakeMessageEvent(new FakeSocket()).data;
   const host = [...body.children, ...panel.children].find((element) => element.id === "mwi-labyrinth-loop-host");
   assert.ok(host);
-  host.shadowElements.get(".toggle").click();
+  if (!savedState?.enabled) host.shadowElements.get(".toggle").click();
   return {
-    start, end, enter, refill, navSettings, sent, welcomeClose, host, panel,
+    start, end, enter, refill, navLabyrinth, navSettings, sent, welcomeClose, host, panel,
     tick(milliseconds = 2000) { now += milliseconds; intervals[0](); },
     showButtons() { buttonsInitiallyVisible = true; },
     hideButtons() { buttonsInitiallyVisible = false; pageButtons = []; },
@@ -268,6 +271,33 @@ assert.equal(delayedButtons.host.hidden, true, "hide away from the labyrinth con
 const resumed = harness({ active: true, floor: 2 });
 resumed.tick();
 assert.equal(resumed.sent[0].type, "escape_labyrinth", "end a maze already at target");
+
+const disabledEntrance = harness({ active: true, floor: 2 });
+disabledEntrance.enter.disabled = true;
+disabledEntrance.tick();
+disabledEntrance.tick();
+assert.equal(disabledEntrance.state().phase, "idle",
+  "a visible entrance confirms exit even while temporarily disabled");
+disabledEntrance.tick();
+assert.equal(disabledEntrance.sent.length, 1,
+  "do not enter another maze until the entrance becomes enabled");
+
+const elsewhereAfterEscape = harness({ active: true, floor: 2, hideOnEscape: true });
+elsewhereAfterEscape.tick();
+elsewhereAfterEscape.tick();
+assert.equal(elsewhereAfterEscape.navLabyrinth.clickCount, 1,
+  "return to the labyrinth page before declaring exit unconfirmed");
+elsewhereAfterEscape.tick();
+assert.equal(elsewhereAfterEscape.state().phase, "idle");
+
+const savedTimeout = harness({ savedState: {
+  version: 8, enabled: true, phase: "paused", started: true, observed: true,
+  before: { floor: 1, torches: 400 }, entryTickets: 1, entryAttempts: 1,
+  since: 1000, error: "无法确认迷宫已退出",
+} });
+savedTimeout.tick();
+assert.equal(savedTimeout.state().phase, "idle",
+  "a stored exit timeout recovers when the entrance is now visible");
 
 const empty = harness({ tickets: 0 });
 empty.tick();

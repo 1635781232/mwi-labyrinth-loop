@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Milky Way Idle 测试服迷宫循环
 // @namespace    https://github.com/1635781232/mwi-labyrinth-loop
-// @version      0.5.5
+// @version      0.5.6
 // @description  手动启用后，使用游戏内置自动化循环进入、开始、结束迷宫，并在测试服补充入场券。
 // @author       1635781232
 // @license      MIT
@@ -43,8 +43,14 @@
   // Preserve a pending run across refreshes of this version.
   if (saved.version === 8 && saved.enabled) {
     Object.assign(state, saved);
+    if (state.phase === "paused" && state.error === "无法确认迷宫已退出") {
+      state.phase = "ending";
+      state.error = "";
+      state.since = Date.now();
+    }
   }
   let lastClick = 0;
+  let lastExitNavigation = 0;
   let gameSocket = null;
   let status = state.enabled ? "检查迷宫" : "脚本已停用";
   let logs = Array.isArray(GM_getValue(logKey, [])) ? GM_getValue(logKey, []).slice(-100) : [];
@@ -248,6 +254,7 @@
   }
 
   function resetRun() {
+    lastExitNavigation = 0;
     state.started = false;
     state.observed = false;
     state.before = null;
@@ -337,8 +344,17 @@
       const maze = activeMaze();
       if (maze) return runMaze(maze);
       if (state.phase === "ending") {
-        if (button(["进入迷宫", "Enter Labyrinth"])) resetRun();
-        else if (Date.now() - state.since > 60000) pause("无法确认迷宫已退出");
+        if (button(["进入迷宫", "Enter Labyrinth"], document, true)) resetRun();
+        else if (Date.now() - state.since > 60000) {
+          note("exitUnconfirmed", {
+            tickets: entries(),
+            labyrinthSectionVisible: visible(document.querySelector("[class*='LabyrinthPanel_buttonsSection']")),
+          });
+          pause("无法确认迷宫已退出");
+        } else if (Date.now() - lastExitNavigation >= 10000 && navigate("labyrinth")) {
+          lastExitNavigation = Date.now();
+          status = "返回迷宫页面，核对退出结果";
+        }
         return;
       }
       if (state.phase === "waiting") {
@@ -524,7 +540,7 @@
     panel.expand.addEventListener("click", () => { panel.detailsOpen = !panel.detailsOpen; render(); });
     panel.retry.addEventListener("click", retry);
     panel.copy.addEventListener("click", () => {
-      GM_setClipboard(JSON.stringify({ version: "0.5.5", characterId, state, status, logs }, null, 2));
+      GM_setClipboard(JSON.stringify({ version: "0.5.6", characterId, state, status, logs }, null, 2));
       status = "详细日志已复制";
       render();
     });
@@ -533,7 +549,7 @@
   }
 
   createPanel();
-  note("loaded", { version: "0.5.5" });
+  note("loaded", { version: "0.5.6" });
   new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true, characterData: true });
   setInterval(tick, 2000);
   window.addEventListener("beforeunload", unlock);
