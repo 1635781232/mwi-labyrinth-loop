@@ -173,8 +173,8 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFail
   const intervals = [];
   const timers = [];
   const window = {
-    innerWidth: 1000,
-    innerHeight: 700,
+    innerWidth: 1875,
+    innerHeight: 923,
     listeners: new Map(),
     addEventListener(name, callback) { this.listeners.set(name, callback); },
   };
@@ -203,7 +203,7 @@ function harness({ tickets = 2, active = false, floor = 1, target = 2, entryFail
   assert.ok(host);
   if (!savedState?.enabled) host.shadowElements.get(".toggle").click();
   return {
-    start, end, enter, refill, navLabyrinth, navSettings, sent, welcomeClose, host, panel,
+    start, end, enter, refill, navLabyrinth, navSettings, sent, welcomeClose, host, panel, body,
     tick(milliseconds = 2000) { now += milliseconds; intervals[0](); },
     showButtons() { buttonsInitiallyVisible = true; },
     hideButtons() { buttonsInitiallyVisible = false; pageButtons = []; },
@@ -245,23 +245,25 @@ otherPopup.tick();
 assert.equal(otherPopup.welcomeClose.clickCount, 0, "leave other dialogs untouched");
 assert.equal(otherPopup.state().phase, "paused", "pause for an unrecognized dialog");
 
-assert.equal(welcomeFlow.host.parentElement, welcomeFlow.panel,
-  "mount beside the four lower labyrinth action buttons");
-assert.equal(welcomeFlow.host.style.left, "1093px", "place the panel 10px right of the action buttons");
-assert.equal(welcomeFlow.host.style.top, "486px", "align the panel with the action buttons");
+assert.equal(welcomeFlow.host.parentElement, welcomeFlow.body,
+  "keep the panel outside the game's managed labyrinth DOM");
+assert.equal(welcomeFlow.panel.style.position, undefined,
+  "do not change the game's layout container");
+assert.equal(welcomeFlow.host.style.left, "1253px", "place the panel 10px right of the action buttons");
+assert.equal(welcomeFlow.host.style.top, "576px", "align the panel with the action buttons");
 welcomeFlow.host.shadowElements.get(".expand").click();
 assert.equal(welcomeFlow.host.shadowElements.get(".details").hidden, false,
   "keep detailed status and log actions accessible in the inline panel");
 
 const delayedButtons = harness({ buttonsInitiallyVisible: false });
-assert.equal(delayedButtons.host.parentElement, delayedButtons.panel,
+assert.equal(delayedButtons.host.parentElement, delayedButtons.body,
   "mount on the entrance screen even without the active-maze button section");
 assert.equal(delayedButtons.host.hidden, false);
-assert.equal(delayedButtons.host.style.left, "1148px",
+assert.equal(delayedButtons.host.style.left, "1308px",
   "place the panel left of Enter Labyrinth when there is no room on the right");
 delayedButtons.showButtons();
 delayedButtons.tick();
-assert.equal(delayedButtons.host.parentElement, delayedButtons.panel,
+assert.equal(delayedButtons.host.parentElement, delayedButtons.body,
   "mount after the game renders the lower action buttons");
 assert.equal(delayedButtons.host.hidden, false);
 delayedButtons.hideButtons();

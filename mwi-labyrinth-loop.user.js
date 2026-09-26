@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Milky Way Idle 测试服迷宫循环
 // @namespace    https://github.com/1635781232/mwi-labyrinth-loop
-// @version      0.5.6
+// @version      0.5.7
 // @description  手动启用后，使用游戏内置自动化循环进入、开始、结束迷宫，并在测试服补充入场券。
 // @author       1635781232
 // @license      MIT
@@ -486,13 +486,11 @@
     const right = Math.max(...actionRects.map((rect) => rect.right));
     const left = Math.min(...actionRects.map((rect) => rect.left));
     const top = Math.min(...actionRects.map((rect) => rect.top));
-    const root = actionRoot;
-    if (panel.host.parentElement !== root) root.appendChild(panel.host);
-    if (getComputedStyle(root).position === "static") root.style.position = "relative";
-    const rootRect = root.getBoundingClientRect();
-    const panelLeft = right + 146 <= rootRect.right - 6 ? right + 10 : left - 146;
-    panel.host.style.left = `${Math.max(0, Math.min(panelLeft, rootRect.right - 142) - rootRect.left)}px`;
-    panel.host.style.top = `${Math.max(0, top - rootRect.top - 3)}px`;
+    const rootRect = actionRoot.getBoundingClientRect();
+    const availableRight = Math.min(rootRect.right, window.innerWidth);
+    const panelLeft = right + 146 <= availableRight - 6 ? right + 10 : left - 146;
+    panel.host.style.left = `${Math.max(0, Math.min(panelLeft, availableRight - 142))}px`;
+    panel.host.style.top = `${Math.max(0, Math.min(top - 3, window.innerHeight - 52))}px`;
     panel.host.hidden = false;
   }
 
@@ -503,7 +501,7 @@
     document.body.appendChild(host);
     const root = host.attachShadow({ mode: "open" });
     root.innerHTML = `<style>
-      :host { position: absolute; z-index: 20; display: block; font: 11px sans-serif; }
+      :host { position: fixed; z-index: 20; display: block; font: 11px sans-serif; }
       :host([hidden]), [hidden] { display: none !important; }
       section { position: relative; display: flex; align-content: start; align-items: center;
         flex-wrap: wrap; gap: 3px; box-sizing: border-box; width: 136px; min-height: 52px;
@@ -540,7 +538,7 @@
     panel.expand.addEventListener("click", () => { panel.detailsOpen = !panel.detailsOpen; render(); });
     panel.retry.addEventListener("click", retry);
     panel.copy.addEventListener("click", () => {
-      GM_setClipboard(JSON.stringify({ version: "0.5.6", characterId, state, status, logs }, null, 2));
+      GM_setClipboard(JSON.stringify({ version: "0.5.7", characterId, state, status, logs }, null, 2));
       status = "详细日志已复制";
       render();
     });
@@ -549,7 +547,7 @@
   }
 
   createPanel();
-  note("loaded", { version: "0.5.6" });
+  note("loaded", { version: "0.5.7" });
   new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true, characterData: true });
   setInterval(tick, 2000);
   window.addEventListener("beforeunload", unlock);
